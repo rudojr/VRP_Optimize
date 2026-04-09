@@ -6,3 +6,7 @@ env/
 ENV/
 
 #python cache
+__pycache__/
+
+#folder
+test/
