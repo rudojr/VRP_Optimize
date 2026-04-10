@@ -1,12 +1,3 @@
-"""
-ALNS + Tabu Search meta-heuristic for CVRPTW
-─────────────────────────────────────────────
-Giải cùng bài toán với vrp_milp.py để so sánh:
-  • Cùng dữ liệu (store.csv, distant_matrix.csv)
-  • Cùng hàm mục tiêu: transport + late_penalty + congestion
-  • Cùng ràng buộc: capacity, time-window (soft upper → penalty)
-"""
-
 import copy
 import math
 import random
@@ -45,7 +36,8 @@ def load_data():
 
     df_matrix = pd.read_csv("data/140_distant_matrix.csv")
     df_matrix = df_matrix.drop(columns=["From/to"])
-    distance_matrix = df_matrix.values
+    distance_matrix = df_matrix.values / 1000.0
+
 
     num_nodes = distance_matrix.shape[0]
     congestion_matrix = generate_congestion_matrix(num_nodes, seed=42)
@@ -100,7 +92,6 @@ class Solution:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class CostEvaluator:
-    """Tính chi phí giống hệt MILP: transport + late_penalty + congestion."""
 
     def __init__(self, data: dict):
         self.dist = data["distance_matrix"]
@@ -650,7 +641,7 @@ def local_search_relocate(sol: Solution, evaluator: CostEvaluator,
 def alns_tabu_solve(
     data: dict,
     num_vehicles: int,
-    max_iterations: int = 5000,
+    max_iterations: int = 500,
     segment_size: int = 100,
     tabu_tenure: int = 15,
     sa_start_temp: float = 1000,
@@ -660,11 +651,7 @@ def alns_tabu_solve(
     seed: int = 42,
     verbose: bool = False,
 ) -> Tuple[str, float, list, float]:
-    """
-    ALNS + Tabu Search meta-heuristic.
 
-    Returns: (status, total_cost, routes_info, solve_time)
-    """
     random.seed(seed)
     np.random.seed(seed)
 
@@ -939,7 +926,7 @@ def print_solution(data, num_vehicles, status, total_cost, routes_info, solve_ti
     print(f"{'═' * 90}")
 
 
-def vehicle_sweep(data, k_min=3, k_max=7, time_limit_iter=5000):
+def vehicle_sweep(data, k_min=3, k_max=7, time_limit_iter=500):
     print("==" * 80)
     print("SOLVE ALNS + TABU SEARCH")
     print("==" * 80)
@@ -1056,4 +1043,4 @@ if __name__ == "__main__":
     print(f"Avg speed    : {data['avg_speed_kmh']} km/h")
     print()
 
-    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit_iter=5000)
+    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit_iter=1000)
