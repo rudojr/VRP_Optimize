@@ -28,7 +28,7 @@ def generate_congestion_matrix(num_nodes, seed=42):
 
 
 def load_data():
-    df_store = pd.read_csv("data/store.csv")
+    df_store = pd.read_csv("data/140_stores.csv")
     df_store["Demand_kg"] = (
         df_store["Demand"]
         .astype(str)
@@ -43,7 +43,7 @@ def load_data():
     df_store["tw_start"] = df_store["Time start"].apply(time_to_minutes)
     df_store["tw_end"]   = df_store["Time end"].apply(time_to_minutes)
 
-    df_matrix = pd.read_csv("data/distant_matrix.csv")
+    df_matrix = pd.read_csv("data/140_distant_matrix.csv")
     df_matrix = df_matrix.drop(columns=["From/to"])
     distance_matrix = df_matrix.values
 

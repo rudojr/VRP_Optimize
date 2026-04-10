@@ -10,3 +10,4 @@ __pycache__/
 
 #folder
 test/
+.DS_Store
