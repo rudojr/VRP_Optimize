@@ -1,0 +1,451 @@
+
+==========================================================================================
+  T-ALNS-RRD  |  Tabu + ALNS + Rollout VRP Optimizer
+==========================================================================================
+  Stores     : 139  |  Depot   : (10.730399, 106.5991)
+  Capacity   : 1800 kg  |  Cost/m  : 18 VND
+  Vehicles   : K = 13  |  ALNS iterations : 500
+==========================================================================================
+
+
+══════════════════════════════════════════════════════════════════════
+  Phase 1 — ALNS+Tabu Search  (K=13, 500 iters)
+══════════════════════════════════════════════════════════════════════
+  Initial solution cost: 27,465,286 VND
+  Iter   100: best=12,670,996  current=12,670,996  T=951.7  time=51.8s
+  Iter   200: NEW BEST = 12,100,314 VND [Worst+Regret-2]
+  Iter   200: best=12,100,314  current=12,100,314  T=905.3  time=116.7s
+  Iter   300: best=12,030,128  current=12,030,128  T=861.1  time=191.1s
+  Iter   400: best=11,951,292  current=11,951,292  T=819.1  time=268.9s
+  Iter   500: best=11,819,806  current=11,819,806  T=779.1  time=334.8s
+
+  Finished at iteration 500
+  Best found at iteration 485
+  Final best cost: 11,819,806 VND
+  Solve time: 334.83s
+
+  Destroy weights: ['1.85', '3.53', '1.20', '2.70']
+  Repair  weights: ['1.27', '3.76', '0.59']
+
+  ✓ ALNS+Tabu complete — cost = 11,819,806 VND  (334.8s)
+    Active routes: 11, customers: 139
+
+══════════════════════════════════════════════════════════════════════
+  Phase 2a — Rollout-guided Inter-Route Reassignment
+  (Exact cost eval, best-move search, max 10 iters)
+══════════════════════════════════════════════════════════════════════
+    [Reassign] Converged after 1 iteration(s)
+
+Phase 2a complete — cost = 11,819,806 VND  (0.1s)
+
+══════════════════════════════════════════════════════════════════════
+  Phase 2b — Event-Driven Rollout Dispatch (Algorithm 3 offline sim)
+  urgency_threshold = 0.65  (rollout triggered khi slack < 35% TW width)
+══════════════════════════════════════════════════════════════════════
+
+  ✓ Phase 2b complete — cost = 11,819,806 VND  (0.0s)
+    Dispatch events : 21 ROLLOUT  |  118 FOLLOW-PLAN
+    Rollout rate    : 15.1%
+
+══════════════════════════════════════════════════════════════════════
+  Phase 3 — 2-opt Polish
+══════════════════════════════════════════════════════════════════════
+
+Phase 3 complete — cost = 11,819,806 VND  (0.0s)
+
+==========================================================================================
+  VEHICLE ROUTES & COST BREAKDOWN  (K=11 active vehicles)
+==========================================================================================
+
+------------------------------------------------------------------------------------------
+  Vehicle 1
+------------------------------------------------------------------------------------------
+  Route: Depot -> MC-21 Rạch Bùng Binh -> FRCH-126A Nguyễn Phúc Nguyên -> BB-104 Nguyễn Duy Trinh -> MC-161 Nguyễn Duy Trinh -> MC-334 Đỗ Xuân Hợp -> BB-301 Đỗ Xuân Hợp -> BB-135 Tăng Nhơn Phú -> MC-398 Nguyễn Văn Tăng -> BB-66 Man Thiện -> MC-73 Lê Văn Việt -> BB-8 Tô Vĩnh Diện -> MC-56 Hoàng Diệu 2 -> BB-54i Hoàng Diệu 2 -> BB-266 Hoàng Diệu 2 -> MC-12 Tô Ngọc Vân -> FRCH-18 Phú Châu -> MC-66 Hiệp Bình -> Depot
+  Nodes: [0, 96, 95, 111, 112, 113, 114, 115, 116, 117, 118, 119, 121, 120, 122, 124, 123, 125, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    MC-21 Rạch Bùng Binh         9:45     9:45-10:15              1     
+  2    FRCH-126A Nguyễn Phúc Nguyên 9:55     9:30-10:00              1     
+  3    BB-104 Nguyễn Duy Trinh      10:30    10:30-11:00             1     
+  4    MC-161 Nguyễn Duy Trinh      10:45    10:45-11:15             2     
+  5    MC-334 Đỗ Xuân Hợp           11:02    11:00-11:30             1     
+  6    BB-301 Đỗ Xuân Hợp           11:30    11:30-12:00             1     
+  7    BB-135 Tăng Nhơn Phú         11:45    11:45-12:15             1     
+  8    MC-398 Nguyễn Văn Tăng       12:30    12:30-13:00             2     
+  9    BB-66 Man Thiện              12:46    12:45-13:15             1     
+  10   MC-73 Lê Văn Việt            13:00    13:00-13:30             3     
+  11   BB-8 Tô Vĩnh Diện            13:15    13:15-13:45             1     
+  12   MC-56 Hoàng Diệu 2           13:45    13:45-14:15             2     
+  13   BB-54i Hoàng Diệu 2          13:55    13:30-14:00             2     
+  14   BB-266 Hoàng Diệu 2          14:06    14:00-14:30             2     
+  15   MC-12 Tô Ngọc Vân            14:30    14:30-15:00             1     
+  16   FRCH-18 Phú Châu             14:42    14:15-14:45             1     
+  17   MC-66 Hiệp Bình              15:00    15:00-15:30             1     
+  18   Depot                        15:34    6:00-18:00              1     
+
+  Distance     :      79.75 km
+  Load         :     1749.6 / 1800 kg
+  Transport    :       1,435,446 VND
+  Delay penalty:               0 VND
+  Congestion   :         125,000 VND
+  TOTAL        :       1,560,446 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 2
+------------------------------------------------------------------------------------------
+  Route: Depot -> BB-245 Nguyễn Tri Phương -> MC-213E Nguyễn Văn Cừ -> BB-213 Nguyễn Văn Cừ -> MC-406 Nguyễn Tri Phương -> BB-388A Cách Mạng Tháng Tám -> MC-86 Nguyễn Huệ -> MC-55 Cô Bắc -> MC-91/1 Lâm Văn Bền -> MC-520 Nguyễn Thị Thập -> MC-947 Lê Văn Lương -> FRCH-831/4 Lê Văn Lương -> MC-52-64-56 Đường D1 (Hoàng Trọng Mậu) -> MC-90 Bùi Hữu Nghĩa -> Depot
+  Nodes: [0, 129, 86, 87, 130, 10, 88, 89, 42, 41, 34, 70, 68, 137, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    BB-245 Nguyễn Tri Phương     10:45    10:45-11:15             1     
+  2    MC-213E Nguyễn Văn Cừ        11:00    11:00-11:30             2     
+  3    BB-213 Nguyễn Văn Cừ         11:15    11:15-11:45             2     
+  4    MC-406 Nguyễn Tri Phương     11:30    11:30-12:00             3     
+  5    BB-388A Cách Mạng Tháng Tám  11:43    11:20-11:50             1     
+  6    MC-86 Nguyễn Huệ             11:58    11:30-12:00             2     
+  7    MC-55 Cô Bắc                 12:10    12:00-12:30             1     
+  8    MC-91/1 Lâm Văn Bền          13:00    13:00-13:30             2     
+  9    MC-520 Nguyễn Thị Thập       13:13    13:00-13:30             1     
+  10   MC-947 Lê Văn Lương          13:28    13:00-13:30             1     
+  11   FRCH-831/4 Lê Văn Lương      13:39    13:20-13:50             1     
+  12   MC-52-64-56 Đường D1 (Hoàng Trọng Mậu) 14:00    14:00-14:30             2     
+  13   MC-90 Bùi Hữu Nghĩa          14:15    14:00-14:30             1     
+  14   Depot                        14:39    6:00-18:00              1     
+
+  Distance     :      56.27 km
+  Load         :     1721.9 / 1800 kg
+  Transport    :       1,012,860 VND
+  Delay penalty:               0 VND
+  Congestion   :         105,000 VND
+  TOTAL        :       1,117,860 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 3
+------------------------------------------------------------------------------------------
+  Route: Depot -> MC-D15/40 Đinh Đức Thiện -> FRCH-503 Hồ Học Lãm -> MC-421 Hồ Học Lãm -> Depot
+  Nodes: [0, 35, 76, 55, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    MC-D15/40 Đinh Đức Thiện     13:20    13:20-13:50             1     
+  2    FRCH-503 Hồ Học Lãm          13:39    13:10-13:40             1     
+  3    MC-421 Hồ Học Lãm            20:10    20:10-20:40             1     
+  4    Depot                        20:23    6:00-18:00              2     
+
+  Distance     :      21.63 km
+  Load         :      608.0 / 1800 kg
+  Transport    :         389,376 VND
+  Delay penalty:               0 VND
+  Congestion   :          25,000 VND
+  TOTAL        :         414,376 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 4
+------------------------------------------------------------------------------------------
+  Route: Depot -> FRCH-83 Tân Hòa Đông -> MC-8 Thạch Lam -> BB-8 Thạch Lam -> MC-182 Tân Sơn Nhì -> BB-31 Đồng Đen -> MC-74 Đồng Đen -> FRCH-282A Hồng Lạc -> MC-111 Lê Trọng Tấn -> BB-87 Quách Điêu -> BB-785 Tân Kỳ Tân Quý -> BB-505 Võ Văn Vân -> Depot
+  Nodes: [0, 81, 1, 5, 7, 18, 21, 78, 6, 22, 65, 24, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    FRCH-83 Tân Hòa Đông         9:30     9:30-10:00              1     
+  2    MC-8 Thạch Lam               10:00    10:00-10:30             1     
+  3    BB-8 Thạch Lam               10:15    10:00-10:30             1     
+  4    MC-182 Tân Sơn Nhì           10:29    10:00-10:30             2     
+  5    BB-31 Đồng Đen               10:50    10:50-11:20             3     
+  6    MC-74 Đồng Đen               11:10    11:10-11:40             1     
+  7    FRCH-282A Hồng Lạc           11:30    11:30-12:00             1     
+  8    MC-111 Lê Trọng Tấn          11:45    11:40-12:10             1     
+  9    BB-87 Quách Điêu             12:30    12:30-13:00             2     
+  10   BB-785 Tân Kỳ Tân Quý        12:50    12:50-13:20             2     
+  11   BB-505 Võ Văn Vân            13:10    13:10-13:40             1     
+  12   Depot                        13:30    6:00-18:00              2     
+
+  Distance     :      52.83 km
+  Load         :     1681.6 / 1800 kg
+  Transport    :         950,994 VND
+  Delay penalty:               0 VND
+  Congestion   :          90,000 VND
+  TOTAL        :       1,040,994 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 5
+------------------------------------------------------------------------------------------
+  Route: Depot -> MC-38 Đường 3 -> MC-27A Quốc Hương -> BB-6 Hoàng Hoa Thám -> BB-6 Vạn Kiếp -> MC-45 Vạn Kiếp -> MC-198 Nguyễn Xí -> MC-123 Nơ Trang Long -> BB-279 Nguyễn Thái Sơn -> MC-41 Nguyễn Văn Nghi -> BB-151 Bùi Đình Túy -> MC-185 Bùi Đình Tuý -> MC- 177 Tô Hiến Thành -> MC-160A Nguyễn Thị Nhỏ -> MC-79 Lạc Long Quân -> Depot
+  Nodes: [0, 110, 109, 19, 100, 101, 102, 103, 11, 15, 104, 105, 136, 51, 52, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    MC-38 Đường 3                9:45     9:45-10:15              1     
+  2    MC-27A Quốc Hương            9:58     9:30-10:00              2     
+  3    BB-6 Hoàng Hoa Thám          10:30    10:30-11:00             3     
+  4    BB-6 Vạn Kiếp                11:15    11:15-11:45             2     
+  5    MC-45 Vạn Kiếp               11:30    11:30-12:00             1     
+  6    MC-198 Nguyễn Xí             11:45    11:45-12:15             2     
+  7    MC-123 Nơ Trang Long         12:30    12:30-13:00             1     
+  8    BB-279 Nguyễn Thái Sơn       12:42    12:40-13:10             1     
+  9    MC-41 Nguyễn Văn Nghi        13:00    13:00-13:30             2     
+  10   BB-151 Bùi Đình Túy          13:14    12:45-13:15             1     
+  11   MC-185 Bùi Đình Tuý          13:30    13:30-14:00             1     
+  12   MC- 177 Tô Hiến Thành        13:49    13:30-14:00             1     
+  13   MC-160A Nguyễn Thị Nhỏ       18:50    18:50-19:20             1     
+  14   MC-79 Lạc Long Quân          19:10    19:10-19:40             1     
+  15   Depot                        19:29    6:00-18:00              2     
+
+  Distance     :      60.58 km
+  Load         :     1709.4 / 1800 kg
+  Transport    :       1,090,386 VND
+  Delay penalty:               0 VND
+  Congestion   :         110,000 VND
+  TOTAL        :       1,200,386 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 6
+------------------------------------------------------------------------------------------
+  Route: Depot -> MC-245 Tân Hương -> BB-252 Tân Hương -> BB-97 Tân Quý -> MC-483 Lê Văn Sỹ -> BB-480A Lê Văn Sỹ -> MC-11 Trần Quốc Toản -> BB-135 Thích Quảng Đức -> BB-5/50 Quang Trung -> BB-1 Nguyễn Ảnh Thủ -> BB-89/8A Phan Văn Hớn -> BB-106B Phan Văn Hớn -> MC-192 Nguyễn Thị Tú -> Depot
+  Nodes: [0, 58, 3, 2, 97, 98, 99, 59, 71, 73, 25, 27, 56, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    MC-245 Tân Hương             10:20    10:20-10:50             1     
+  2    BB-252 Tân Hương             10:30    10:20-10:50             2     
+  3    BB-97 Tân Quý                10:41    10:20-10:50             1     
+  4    MC-483 Lê Văn Sỹ             10:57    10:30-11:00             1     
+  5    BB-480A Lê Văn Sỹ            11:07    10:45-11:15             1     
+  6    MC-11 Trần Quốc Toản         11:22    11:00-11:30             2     
+  7    BB-135 Thích Quảng Đức       12:00    12:00-12:30             1     
+  8    BB-5/50 Quang Trung          12:24    12:10-12:40             2     
+  9    BB-1 Nguyễn Ảnh Thủ          13:10    13:10-13:40             1     
+  10   BB-89/8A Phan Văn Hớn        13:30    13:30-14:00             1     
+  11   BB-106B Phan Văn Hớn         14:10    14:10-14:40             1     
+  12   MC-192 Nguyễn Thị Tú         20:30    20:30-21:00             2     
+  13   Depot                        20:51    6:00-18:00              1     
+
+  Distance     :      64.01 km
+  Load         :     1706.8 / 1800 kg
+  Transport    :       1,152,144 VND
+  Delay penalty:               0 VND
+  Congestion   :          85,000 VND
+  TOTAL        :       1,237,144 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 7
+------------------------------------------------------------------------------------------
+  Route: Depot -> FRCH-3C Hòa Bình -> MC-38 Trịnh Đình Trọng -> MC-58 Bành Văn Trân -> MC-128 Phổ Quang -> MC-5A Thích Quảng Đức -> MC-742 Lê Đức Thọ -> BB-113 Nguyễn Ảnh Thủ -> MC-66 Nguyễn Ảnh Thủ -> BB-659 Hà Huy Giáp -> MC-327/37 Hà Huy Giáp -> MC-122 Lê Văn Thọ -> BB-441 Nguyễn Văn Khối -> BB-149 Đường số 8 -> BB-603 Lê Đức Thọ -> MC-227 Thống Nhất -> MC-14/1 Nguyễn Văn Quá -> MC-58/2A Quang Trung -> MC-16 Phan Văn Hớn, Hóc Môn -> Depot
+  Nodes: [0, 126, 4, 64, 9, 8, 72, 23, 74, 26, 28, 13, 79, 43, 44, 45, 47, 48, 49, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    FRCH-3C Hòa Bình             9:30     9:30-10:00              1     
+  2    MC-38 Trịnh Đình Trọng       10:40    10:40-11:10             1     
+  3    MC-58 Bành Văn Trân          11:30    11:30-12:00             3     
+  4    MC-128 Phổ Quang             11:46    11:40-12:10             1     
+  5    MC-5A Thích Quảng Đức        12:20    12:20-12:50             3     
+  6    MC-742 Lê Đức Thọ            12:50    12:50-13:20             2     
+  7    BB-113 Nguyễn Ảnh Thủ        13:05    12:50-13:20             1     
+  8    MC-66 Nguyễn Ảnh Thủ         13:50    13:50-14:20             1     
+  9    BB-659 Hà Huy Giáp           14:07    13:50-14:20             2     
+  10   MC-327/37 Hà Huy Giáp        14:30    14:30-15:00             1     
+  11   MC-122 Lê Văn Thọ            14:48    14:20-14:50             1     
+  12   BB-441 Nguyễn Văn Khối       16:00    16:00-16:30             1     
+  13   BB-149 Đường số 8            17:30    17:30-18:00             1     
+  14   BB-603 Lê Đức Thọ            17:50    17:50-18:20             1     
+  15   MC-227 Thống Nhất            18:10    18:10-18:40             2     
+  16   MC-14/1 Nguyễn Văn Quá       18:50    18:50-19:20             2     
+  17   MC-58/2A Quang Trung         19:10    19:10-19:40             1     
+  18   MC-16 Phan Văn Hớn, Hóc Môn  19:30    19:30-20:00             1     
+  19   Depot                        19:52    6:00-18:00              1     
+
+  Distance     :      81.55 km
+  Load         :     1736.8 / 1800 kg
+  Transport    :       1,467,936 VND
+  Delay penalty:               0 VND
+  Congestion   :         135,000 VND
+  TOTAL        :       1,602,936 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 8
+------------------------------------------------------------------------------------------
+  Route: Depot -> BB-53 Đường số 5 -> MC-127 Hà Tôn Quyền -> MC-250 Nguyễn Tri Phương -> MC-Vạn Hạnh Mall -> FRCH-323bis 3/2 -> BB-5 Nguyễn Khắc Nhu -> BB-67 Hồ Tùng Mậu -> BB-540 Lê Quang Định -> BB-112 Nguyễn Văn Nghi -> FRCH-458 Dương Quãng Hàm -> MC-319 Phạm Văn Chiêu -> MC-390 Phan Huy Ích -> MC-47B Phan Huy Ích -> FRCH-353 Nguyễn Văn Quá -> MC-9 Phan Văn Hớn -> MC-33 Thạch Lam -> MC-145 Lê Văn Quới -> Depot
+  Nodes: [0, 127, 75, 131, 133, 132, 91, 92, 60, 12, 61, 62, 14, 63, 66, 46, 50, 54, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    BB-53 Đường số 5             9:45     9:45-10:15              1     
+  2    MC-127 Hà Tôn Quyền          11:50    11:50-12:20             1     
+  3    MC-250 Nguyễn Tri Phương     12:03    11:45-12:15             1     
+  4    MC-Vạn Hạnh Mall             12:16    12:15-12:45             1     
+  5    FRCH-323bis 3/2              12:26    12:00-12:30             2     
+  6    BB-5 Nguyễn Khắc Nhu         12:45    12:45-13:15             1     
+  7    BB-67 Hồ Tùng Mậu            13:30    13:30-14:00             1     
+  8    BB-540 Lê Quang Định         13:48    13:40-14:10             1     
+  9    BB-112 Nguyễn Văn Nghi       14:00    14:00-14:30             1     
+  10   FRCH-458 Dương Quãng Hàm     14:12    14:00-14:30             1     
+  11   MC-319 Phạm Văn Chiêu        14:28    14:20-14:50             1     
+  12   MC-390 Phan Huy Ích          14:41    14:40-15:10             1     
+  13   MC-47B Phan Huy Ích          14:52    14:40-15:10             1     
+  14   FRCH-353 Nguyễn Văn Quá      15:05    14:50-15:20             1     
+  15   MC-9 Phan Văn Hớn            18:30    18:30-19:00             3     
+  16   MC-33 Thạch Lam              18:47    18:30-19:00             1     
+  17   MC-145 Lê Văn Quới           19:50    19:50-20:20             1     
+  18   Depot                        20:10    6:00-18:00              2     
+
+  Distance     :      57.03 km
+  Load         :     1698.0 / 1800 kg
+  Transport    :       1,026,486 VND
+  Delay penalty:               0 VND
+  Congestion   :         110,000 VND
+  TOTAL        :       1,136,486 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 9
+------------------------------------------------------------------------------------------
+  Route: Depot -> BB-100A Hậu Giang -> MC-30/18 Quốc lộ 50 -> BB-8 Tuy Lý Vương -> MC-37 Tạ Quang Bửu -> BB-421 Liên Tỉnh 5 -> MC-318D Phạm Hùng -> BB-2Bis Cách Mạng Tháng Tám -> MC-117 Cao Thắng -> MC-214 Nguyễn Thượng Hiền -> BB-145/3B Nguyễn Gia Trí -> MC-479 Điện Biên Phủ -> MC-65 Ngô Tất Tố -> Depot
+  Nodes: [0, 83, 29, 31, 69, 32, 33, 90, 134, 135, 106, 107, 108, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    BB-100A Hậu Giang            10:15    10:15-10:45             1     
+  2    MC-30/18 Quốc lộ 50          11:00    11:00-11:30             1     
+  3    BB-8 Tuy Lý Vương            11:20    11:20-11:50             2     
+  4    MC-37 Tạ Quang Bửu           11:40    11:40-12:10             1     
+  5    BB-421 Liên Tỉnh 5           12:20    12:20-12:50             1     
+  6    MC-318D Phạm Hùng            12:40    12:40-13:10             1     
+  7    BB-2Bis Cách Mạng Tháng Tám  12:54    12:30-13:00             2     
+  8    MC-117 Cao Thắng             13:06    13:00-13:30             2     
+  9    MC-214 Nguyễn Thượng Hiền    13:17    13:15-13:45             1     
+  10   BB-145/3B Nguyễn Gia Trí     13:45    13:45-14:15             2     
+  11   MC-479 Điện Biên Phủ         14:30    14:30-15:00             1     
+  12   MC-65 Ngô Tất Tố             15:00    15:00-15:30             1     
+  13   Depot                        15:29    6:00-18:00              1     
+
+  Distance     :      51.40 km
+  Load         :     1765.3 / 1800 kg
+  Transport    :         925,146 VND
+  Delay penalty:               0 VND
+  Congestion   :          85,000 VND
+  TOTAL        :       1,010,146 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 10
+------------------------------------------------------------------------------------------
+  Route: Depot -> MC-165 Bình Phú -> BB-92B Hậu Giang -> MC-70 Hậu Giang -> BB-769 Phạm Thế Hiển -> BB-189 Đường Số 17 -> BB-138 Lâm Văn Bền -> BB-1568 Huỳnh Tấn Phát -> BB-213 Nguyễn Thị Thập -> FRCH-355 Huỳnh Tân Phát -> MC-490 Huỳnh Tấn Phát -> BB-67 Tôn Đản -> MC-197 Tôn Đản -> BB-171 Cao Đạt -> MC-139 Cao Đạt -> Depot
+  Nodes: [0, 82, 84, 85, 30, 36, 37, 38, 39, 67, 40, 93, 94, 138, 139, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    MC-165 Bình Phú              9:45     9:45-10:15              2     
+  2    BB-92B Hậu Giang             10:30    10:30-11:00             1     
+  3    MC-70 Hậu Giang              10:45    10:45-11:15             1     
+  4    BB-769 Phạm Thế Hiển         11:02    11:00-11:30             1     
+  5    BB-189 Đường Số 17           11:18    11:00-11:30             1     
+  6    BB-138 Lâm Văn Bền           11:29    11:00-11:30             1     
+  7    BB-1568 Huỳnh Tấn Phát       11:46    11:20-11:50             1     
+  8    BB-213 Nguyễn Thị Thập       12:03    12:00-12:30             2     
+  9    FRCH-355 Huỳnh Tân Phát      12:17    12:00-12:30             1     
+  10   MC-490 Huỳnh Tấn Phát        13:00    13:00-13:30             2     
+  11   BB-67 Tôn Đản                13:45    13:45-14:15             2     
+  12   MC-197 Tôn Đản               14:00    14:00-14:30             1     
+  13   BB-171 Cao Đạt               14:16    14:15-14:45             1     
+  14   MC-139 Cao Đạt               15:00    15:00-15:30             1     
+  15   Depot                        15:25    6:00-18:00              1     
+
+  Distance     :      53.81 km
+  Load         :     1785.6 / 1800 kg
+  Transport    :         968,598 VND
+  Delay penalty:               0 VND
+  Congestion   :          95,000 VND
+  TOTAL        :       1,063,598 VND
+
+------------------------------------------------------------------------------------------
+  Vehicle 11
+------------------------------------------------------------------------------------------
+  Route: Depot -> FRCH-D35 Cư Xá Phú Lâm B -> BB-351 Tỉnh Lộ 10 -> BB-847 Tỉnh Lộ 10 -> MC-161 Đường Số 1 -> FRCH-10 Phan Anh, Bình Tân -> MC-269 Tân Hòa Đông -> MC-849 Tỉnh lộ 10 -> MC-Go An Lạc -> Depot
+  Nodes: [0, 128, 16, 17, 20, 80, 77, 53, 57, 0]
+
+  #    Store                        Arrive   TW             Late     Cong  
+  ---  ---                          ---      ---            ---      ---   
+  0    Depot                        6:00     6:00-18:00                    
+  1    FRCH-D35 Cư Xá Phú Lâm B     10:30    10:30-11:00             1     
+  2    BB-351 Tỉnh Lộ 10            10:42    10:30-11:00             1     
+  3    BB-847 Tỉnh Lộ 10            10:55    10:50-11:20             2     
+  4    MC-161 Đường Số 1            11:50    11:50-12:20             1     
+  5    FRCH-10 Phan Anh, Bình Tân   12:10    12:10-12:40             1     
+  6    MC-269 Tân Hòa Đông          14:50    14:50-15:20             1     
+  7    MC-849 Tỉnh lộ 10            19:30    19:30-20:00             1     
+  8    MC-Go An Lạc                 20:50    20:50-21:20             1     
+  9    Depot                        21:03    6:00-18:00              1     
+
+  Distance     :      21.41 km
+  Load         :      920.0 / 1800 kg
+  Transport    :         385,434 VND
+  Delay penalty:               0 VND
+  Congestion   :          50,000 VND
+  TOTAL        :         435,434 VND
+
+==========================================================================================
+  COST SUMMARY
+==========================================================================================
+  Travel time cost (transport) :         10,804,806 VND
+  Delay penalty cost           :                  0 VND
+  Congestion cost              :          1,015,000 VND
+  --------------------------------------------------
+  TOTAL COST                   :         11,819,806 VND
+  Computation time             :              334.9 s
+
+==========================================================================================
+  OTDR (On-Time Delivery Ratio)
+==========================================================================================
+  On-time deliveries : 139 / 139
+  Served stores      : 139 / 139
+  OTDR               : 100.00 %
+
+==========================================================================================
+  CES (Congestion Exposure Score)  -- Lower is better
+==========================================================================================
+  CES Score              :        203
+  Peak-hour CES          :          9   (07-09h, 17-19h)
+  Off-peak CES           :        194
+  High-congestion arcs   :          7   (rho >= 3) out of 150 total arcs
+
+==========================================================================================
+  EVENT RESPONSE METRICS  (Rollout Dispatch -- Phase 2b)
+==========================================================================================
+  Event response rate      :      15.11 %   (21 rollout / 139 total)
+  Cost reduction (ALNS->RRD):     0.00 %
+  Adaptation success       :     100.00 %
+  Latency impact           :       0.23 ms/decision
+
+==========================================================================================
+  ROBUSTNESS ANALYSIS  (Travel-time perturbation, 5 trials each)
+==========================================================================================
+  Scenario                           Avg Cost (VND)   Cost Increase
+  ------------------------------ ------------------  --------------
+  Low uncertainty (s=0.1)                11,847,613          +0.24%
+  Medium uncertainty (s=0.2)             11,941,827          +1.03%
+  High uncertainty (s=0.3)               11,930,865          +0.94%
+  Extreme uncertainty (s=0.5)            12,166,894          +2.94%
+  ------------------------------ ------------------  --------------
+  Robustness Index             :     0.9871   (1.0 = perfectly robust)
+
+==========================================================================================
+  RESILIENCE METRICS  (Single severe disruption, sigma=0.4)
+==========================================================================================
+  OTDR drop              :      +4.32 %
+  Max delay increase     :        1.9 min
+  Failed deliveries      :          6
+  Recovery time          :       56.7 ms
+  Adaptation frequency   :       1.44 %
+==========================================================================================
+

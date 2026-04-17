@@ -641,7 +641,7 @@ def local_search_relocate(sol: Solution, evaluator: CostEvaluator,
 def alns_tabu_solve(
     data: dict,
     num_vehicles: int,
-    max_iterations: int = 500,
+    max_iterations: int = 50,
     segment_size: int = 100,
     tabu_tenure: int = 15,
     sa_start_temp: float = 1000,
@@ -836,10 +836,6 @@ def alns_tabu_solve(
     return status, total_cost, routes_info, solve_time
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  OUTPUT (cùng format với vrp_milp.py)
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def print_solution(data, num_vehicles, status, total_cost, routes_info, solve_time):
     store_names = data["store_names"]
     tw = data["time_windows"]
@@ -897,7 +893,6 @@ def print_solution(data, num_vehicles, status, total_cost, routes_info, solve_ti
             print(f"  Late     : {r['late_penalty']:>12,.0f} VND")
         print(f"  Congestion: {r['congestion_cost']:>12,.0f} VND")
 
-    # --- Summary ---
     grand_total = total_transport + total_late + total_cong
     print(f"\n{'═' * 90}")
     print(f"  SUMMARY — K = {num_vehicles}")
@@ -926,7 +921,7 @@ def print_solution(data, num_vehicles, status, total_cost, routes_info, solve_ti
     print(f"{'═' * 90}")
 
 
-def vehicle_sweep(data, k_min=3, k_max=7, time_limit_iter=500):
+def vehicle_sweep(data, k_min, k_max, time_limit_iter):
     print("==" * 80)
     print("SOLVE ALNS + TABU SEARCH")
     print("==" * 80)
@@ -1026,10 +1021,6 @@ def vehicle_sweep(data, k_min=3, k_max=7, time_limit_iter=500):
     return results, best_k
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-
 if __name__ == "__main__":
     data = load_data()
 
@@ -1043,4 +1034,4 @@ if __name__ == "__main__":
     print(f"Avg speed    : {data['avg_speed_kmh']} km/h")
     print()
 
-    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit_iter=1000)
+    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit_iter=500)
