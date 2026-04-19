@@ -996,32 +996,57 @@ if __name__ == "__main__":
             f"time={comp_time:>7.1f}s"
         )
 
+    # ── Composite score: normalize 3 metrics, equal 1/3 weight each ─────
+    #   cost  → minimize  (norm: 0=best, 1=worst)
+    #   OTDR  → maximize  (norm inverted: 0=best, 1=worst)
+    #   CES   → minimize  (norm: 0=best, 1=worst)
+    costs  = [r["total_cost"] for r in summary]
+    otdrs  = [r["otdr"]       for r in summary]
+    ces_v  = [r["ces"]        for r in summary]
+
+    def _norm(vals, invert=False):
+        lo, hi = min(vals), max(vals)
+        span = hi - lo if hi > lo else 1.0
+        if invert:
+            return [(hi - v) / span for v in vals]   # bigger original → 0 (better)
+        return [(v - lo) / span for v in vals]        # smaller original → 0 (better)
+
+    nc  = _norm(costs,  invert=False)
+    no  = _norm(otdrs,  invert=True)    # high OTDR is good → invert
+    nce = _norm(ces_v,  invert=False)
+
+    W_COST, W_OTDR, W_CES = 1/3, 1/3, 1/3
+    for i, r in enumerate(summary):
+        r["_score"] = W_COST * nc[i] + W_OTDR * no[i] + W_CES * nce[i]
+
+    best_r = min(summary, key=lambda x: x["_score"])
+
     # ── Final summary table ───────────────────────────────────────────────
-    print(f"\n{'═'*74}")
-    print(f"  RESULTS — Tabu-ALNS-Rollout  (max_iter=100, N={num_customers} stores)")
-    print(f"{'═'*74}")
+    print(f"\n{'═'*90}")
+    print(f"  RESULTS — Tabu-ALNS-Rollout  (max_iter=500, N={num_customers} stores)")
+    print(f"  Ranking: composite score = 1/3×cost_norm + 1/3×(1−OTDR_norm) + 1/3×CES_norm")
+    print(f"{'═'*90}")
     print(
         f"  {'K':>3}  {'Total Cost (VND)':>18}  "
-        f"{'OTDR (%)':>10}  {'CES Score':>10}  {'Time (s)':>9}"
+        f"{'OTDR (%)':>10}  {'CES Score':>10}  {'Score':>7}  {'Time (s)':>9}"
     )
-    print(f"  {'─'*3}  {'─'*18}  {'─'*10}  {'─'*10}  {'─'*9}")
+    print(f"  {'─'*3}  {'─'*18}  {'─'*10}  {'─'*10}  {'─'*7}  {'─'*9}")
 
-    best_cost = min(r["total_cost"] for r in summary)
     for r in summary:
-        star = " ★" if abs(r["total_cost"] - best_cost) < 1 else "  "
+        star = " ★" if r is best_r else "  "
         print(
             f"  {r['K']:>3}  {r['total_cost']:>18,.0f}  "
             f"{r['otdr']:>9.2f}%  {r['ces']:>10.2f}  "
-            f"{r['time']:>8.1f}s{star}"
+            f"{r['_score']:>7.4f}  {r['time']:>8.1f}s{star}"
         )
 
-    print(f"{'═'*74}")
-    best_r = min(summary, key=lambda x: x["total_cost"])
+    print(f"{'═'*90}")
     print(
-        f"\n  ★  Best K = {best_r['K']}  →  "
+        f"\n  ★  Best balanced K = {best_r['K']}  →  "
         f"{best_r['total_cost']:,.0f} VND  |  "
         f"OTDR = {best_r['otdr']:.2f}%  |  "
-        f"CES = {best_r['ces']:.2f}\n"
+        f"CES = {best_r['ces']:.2f}  |  "
+        f"Score = {best_r['_score']:.4f}\n"
     )
 
     # ── Lưu toàn bộ output vào file log ─────────────────────────────────
