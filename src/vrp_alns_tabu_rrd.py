@@ -932,11 +932,28 @@ def calc_metrics(routes_info: list, data: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import sys, os
+    import sys, os, io, datetime
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_root)
     sys.path.insert(0, project_root)
     sys.path.insert(0, os.path.join(project_root, "src"))
+
+    # ── Tee: ghi đồng thời ra stdout và buffer để lưu log ────────────────
+    class _Tee:
+        """Write to both the original stdout and an in-memory buffer."""
+        def __init__(self, original):
+            self._orig = original
+            self._buf  = io.StringIO()
+        def write(self, msg):
+            self._orig.write(msg)
+            self._buf.write(msg)
+        def flush(self):
+            self._orig.flush()
+        def getvalue(self):
+            return self._buf.getvalue()
+
+    _tee = _Tee(sys.stdout)
+    sys.stdout = _tee
 
     data = load_data()
     num_customers = len(data["distance_matrix"]) - 1
@@ -946,7 +963,7 @@ if __name__ == "__main__":
     print(f"{'═'*72}")
     print(f"  Stores     : {num_customers}  |  Depot   : {data['depot_coords']}")
     print(f"  Capacity   : {data['vehicle_capacity']} kg  |  Cost/m  : {data['cost_per_m']} VND")
-    print(f"  Max iter   : 100  |  Fleet sweep : K = 3 → 13")
+    print(f"  Max iter   : 500  |  Fleet sweep : K = 3 → 13")
     print(f"{'═'*72}\n")
 
     summary = []
@@ -1006,3 +1023,17 @@ if __name__ == "__main__":
         f"OTDR = {best_r['otdr']:.2f}%  |  "
         f"CES = {best_r['ces']:.2f}\n"
     )
+
+    # ── Lưu toàn bộ output vào file log ─────────────────────────────────
+    sys.stdout = _tee._orig          # khôi phục stdout gốc
+    log_path   = os.path.join(project_root, "log_result_alns_tabu_rrd.txt")
+    timestamp  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    header     = (
+        f"{'═'*74}\n"
+        f"  LOG — T-ALNS-RRD  |  Run: {timestamp}\n"
+        f"{'═'*74}\n"
+    )
+    with open(log_path, "w", encoding="utf-8") as _f:
+        _f.write(header)
+        _f.write(_tee.getvalue())
+    print(f"\n  📄  Kết quả đã được lưu vào: {log_path}")
