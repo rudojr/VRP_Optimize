@@ -934,12 +934,9 @@ def calc_metrics(routes_info: list, data: dict) -> dict:
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  SUPPLEMENTARY METRIC REPORTERS
-# ═══════════════════════════════════════════════════════════════════════════════
+
 
 def print_ces_report(m: dict, W: int = 90) -> None:
-    """Print CES (Congestion Exposure Score) breakdown block."""
     print(f"{'═'*W}")
     print(f"  CES (Congestion Exposure Score)  -- Lower is better")
     print(f"{'═'*W}")
@@ -958,11 +955,7 @@ def print_event_response_metrics(
     best_result: dict | None = None,
     W: int = 90,
 ) -> None:
-    """
-    Print Event Response Metrics (Rollout Dispatch — Phase 2b).
-    result        : output of rrd_solve() for the best K
-    best_result   : same dict (kept for symmetry; ignored if None)
-    """
+
     timing_logs = result.get("timing_logs", [])
 
     n_rollout = sum(
@@ -978,10 +971,8 @@ def print_event_response_metrics(
     n_total   = n_rollout + n_plan
     event_rate = n_rollout / n_total * 100 if n_total > 0 else 0.0
 
-    # Cost reduction ALNS → RRD
     imp_pct   = result.get("improvement_pct", 0.0)
 
-    # Adaptation success: % rollout steps where lateness == 0
     rollout_ontime = 0
     rollout_total  = 0
     for logs in timing_logs:
@@ -1000,7 +991,6 @@ def print_event_response_metrics(
         if entry.get("event", "").startswith("ROLLOUT")
     ]
     avg_sim_cost = sum(sim_costs) / len(sim_costs) if sim_costs else 0.0
-    # Express as ms/decision (normalised: divide by 1e6 for readability)
     latency_ms   = avg_sim_cost / 1e6
 
     print(f"{'═'*W}")
@@ -1038,14 +1028,11 @@ def print_robustness_analysis(
     for sigma in sigmas:
         trial_costs = []
         for _ in range(n_trials):
-            # Build perturbed time matrix
-            orig_tt = evaluator.travel_time          # (N,N) minutes
+            orig_tt = evaluator.travel_time          
             noise   = np.random.normal(0, sigma, orig_tt.shape)
             perturbed = np.clip(orig_tt * (1 + noise), 0, None)
 
-            # Temporarily swap travel_time
             evaluator.travel_time = perturbed
-            # Re-evaluate routes with perturbed travel time
             total = 0.0
             for r in base_routes:
                 route_obj = Route(customers=r["nodes"][1:-1])
@@ -1064,7 +1051,6 @@ def print_robustness_analysis(
         )
         scenario_results.append((f"{label} uncertainty (s={sigma})", avg_cost, cost_inc))
 
-    # Robustness Index: 1 - (avg cost_increase over all scenarios)
     avg_inc_pct    = sum(r[2] for r in scenario_results) / len(scenario_results)
     robustness_idx = max(0.0, 1.0 - avg_inc_pct / 100)
 
