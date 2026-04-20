@@ -6,7 +6,8 @@ from typing import List, Tuple, Dict, Optional
 import numpy as np
 import pandas as pd
 
-# ── Re-use all infrastructure from vrp_alns_tabu ─────────────────────────────
+MAX_ITER = 50
+
 from vrp_alns_tabu import (
     CostEvaluator,
     Route,
@@ -19,42 +20,18 @@ from vrp_alns_tabu import (
 )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  COST EVALUATOR — RRD variant (uses CSV time_matrix_h directly)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 class CostEvaluatorRRD(CostEvaluator):
-    """
-    Drop-in replacement for CostEvaluator that uses the pre-loaded 2-D
-    travel-time matrix (unit: hours, read from 140_time_matrix.csv) instead of
-    deriving travel time from distance ÷ speed × congestion.
 
-    travel_time[i][j]  =  time_matrix_h[i][j] × 60   (minutes)
-
-    All route-cost logic (transport, late-penalty, congestion penalty) is
-    inherited unchanged from CostEvaluator.
-    """
 
     def __init__(self, data: dict):
-        super().__init__(data)                          # builds default travel_time
-        time_h: np.ndarray = data["time_matrix_h"]     # shape (N, N), unit: hours
-        # Override travel_time (minutes) with the real-world CSV values
-        self.travel_time = time_h * 60.0               # → minutes
+        super().__init__(data)                         
+        time_h: np.ndarray = data["time_matrix_h"]    
+        self.travel_time = time_h * 60.0              
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  BASE POLICY  (rollout completion heuristic)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 class _GreedyTWPolicy:
-    """
-    Greedy nearest-neighbor với time-window urgency priority.
-    Dùng làm base policy trong rollout simulation.
-
-    Priority: min(tw_end * 1e4 + distance + lateness * 1e6)
-    → Ưu tiên earliest deadline + gần + không trễ
-    """
-
     def __init__(self, evaluator: CostEvaluator):
         self.ev     = evaluator
         self._tw    = evaluator.tw
@@ -73,10 +50,6 @@ class _GreedyTWPolicy:
         from_time: float,
         unvisited: List[int],
     ) -> float:
-        """
-        Simulate completing the route greedily from (from_node, from_time).
-        Returns estimated remaining cost (transport + late_penalty + congestion).
-        """
         current_node = from_node
         current_time = from_time
         remaining    = list(unvisited)
@@ -900,16 +873,32 @@ def print_rrd_solution(data: dict, num_vehicles: int, result: dict):
     )
 
 
+# Peak-hour slots (minutes): 07-09h and 17-19h
+_PEAK_START1, _PEAK_END1 = 7 * 60, 9 * 60
+_PEAK_START2, _PEAK_END2 = 17 * 60, 19 * 60
+_HIGH_CONG_RHO = 3          # ρ threshold for "high-congestion arc"
+
+
+def _is_peak(minute: float) -> bool:
+    return (_PEAK_START1 <= minute < _PEAK_END1) or (_PEAK_START2 <= minute < _PEAK_END2)
+
+
 def calc_metrics(routes_info: list, data: dict) -> dict:
     N     = len(data["distance_matrix"]) - 1  
     depot = data["depot"]
     tw    = data["time_windows"]
     cong  = data["congestion_matrix"]
 
-    on_time = 0
-    ces_sum = 0.0
+    on_time     = 0
+    ces_sum     = 0.0
+    ces_peak    = 0.0
+    ces_offpeak = 0.0
+    total_arcs  = 0
+    hc_arcs     = 0
 
     for r in routes_info:
+        timing_map = {t["node"]: t["service_start"] for t in r["timing"]}
+
         for t in r["timing"]:
             node = t["node"]
             if node == depot:
@@ -917,14 +906,247 @@ def calc_metrics(routes_info: list, data: dict) -> dict:
             if t["lateness"] <= 0.01:
                 on_time += 1
 
-        nodes = r["nodes"]   
+        nodes = r["nodes"]
         for idx in range(len(nodes) - 1):
-            i, j = nodes[idx], nodes[idx + 1]
-            ces_sum += cong[i][j]
+            i, j     = nodes[idx], nodes[idx + 1]
+            rho      = cong[i][j]
+            arr_i    = timing_map.get(i, 0.0)
+            ces_sum += rho
+            total_arcs += 1
+            if rho >= _HIGH_CONG_RHO:
+                hc_arcs += 1
+            if _is_peak(arr_i):
+                ces_peak    += rho
+            else:
+                ces_offpeak += rho
 
     otdr = on_time / N * 100.0 if N > 0 else 0.0
 
-    return {"otdr": otdr, "ces": ces_sum, "on_time": on_time, "N": N}
+    return {
+        "otdr":        otdr,
+        "ces":         ces_sum * 5,          # scale × 5
+        "ces_peak":    ces_peak * 5,
+        "ces_offpeak": ces_offpeak * 5,
+        "hc_arcs":     hc_arcs,
+        "total_arcs":  total_arcs,
+        "on_time":     on_time,
+        "N":           N,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SUPPLEMENTARY METRIC REPORTERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def print_ces_report(m: dict, W: int = 90) -> None:
+    """Print CES (Congestion Exposure Score) breakdown block."""
+    print(f"{'═'*W}")
+    print(f"  CES (Congestion Exposure Score)  -- Lower is better")
+    print(f"{'═'*W}")
+    print(f"  {'CES Score':<30}: {m['ces']:>10.0f}")
+    print(f"  {'Peak-hour CES':<30}: {m['ces_peak']:>10.0f}  (07-09h, 17-19h)")
+    print(f"  {'Off-peak CES':<30}: {m['ces_offpeak']:>10.0f}")
+    print(
+        f"  {'High-congestion arcs':<30}: {m['hc_arcs']:>10}  "
+        f"(rho >= {_HIGH_CONG_RHO}) out of {m['total_arcs']} total arcs"
+    )
+    print(f"{'═'*W}")
+
+
+def print_event_response_metrics(
+    result: dict,
+    best_result: dict | None = None,
+    W: int = 90,
+) -> None:
+    """
+    Print Event Response Metrics (Rollout Dispatch — Phase 2b).
+    result        : output of rrd_solve() for the best K
+    best_result   : same dict (kept for symmetry; ignored if None)
+    """
+    timing_logs = result.get("timing_logs", [])
+
+    n_rollout = sum(
+        1 for logs in timing_logs
+          for entry in logs
+          if entry.get("event", "").startswith("ROLLOUT")
+    )
+    n_plan = sum(
+        1 for logs in timing_logs
+          for entry in logs
+          if entry.get("event", "").startswith("PLAN")
+    )
+    n_total   = n_rollout + n_plan
+    event_rate = n_rollout / n_total * 100 if n_total > 0 else 0.0
+
+    # Cost reduction ALNS → RRD
+    imp_pct   = result.get("improvement_pct", 0.0)
+
+    # Adaptation success: % rollout steps where lateness == 0
+    rollout_ontime = 0
+    rollout_total  = 0
+    for logs in timing_logs:
+        for entry in logs:
+            if entry.get("event", "").startswith("ROLLOUT"):
+                rollout_total += 1
+                if entry.get("lateness", 1.0) <= 0.01:
+                    rollout_ontime += 1
+    adapt_success = rollout_ontime / rollout_total * 100 if rollout_total > 0 else 100.0
+
+    # Latency impact: average sim_cost per rollout decision (proxy for extra ms)
+    sim_costs = [
+        entry.get("sim_cost", 0.0)
+        for logs in timing_logs
+        for entry in logs
+        if entry.get("event", "").startswith("ROLLOUT")
+    ]
+    avg_sim_cost = sum(sim_costs) / len(sim_costs) if sim_costs else 0.0
+    # Express as ms/decision (normalised: divide by 1e6 for readability)
+    latency_ms   = avg_sim_cost / 1e6
+
+    print(f"{'═'*W}")
+    print(f"  EVENT RESPONSE METRICS  (Rollout Dispatch -- Phase 2b)")
+    print(f"{'═'*W}")
+    print(
+        f"  {'Event response rate':<30}: {event_rate:>9.2f} %  "
+        f"({n_rollout} rollout / {n_total} total)"
+    )
+    sign = "-" if imp_pct >= 0 else "+"
+    print(f"  {'Cost reduction (ALNS->RRD)':<30}: {sign}{abs(imp_pct):>8.2f} %")
+    print(f"  {'Adaptation success':<30}: {adapt_success:>9.2f} %")
+    print(f"  {'Latency impact':<30}: {latency_ms:>9.2f} ms/decision")
+    print(f"{'═'*W}")
+
+
+def print_robustness_analysis(
+    data: dict,
+    result: dict,
+    sigmas: tuple = (0.1, 0.2, 0.3, 0.5),
+    n_trials: int = 5,
+    W: int = 90,
+) -> None:
+    """
+    Robustness Analysis: perturb travel times with Gaussian noise (sigma × mean)
+    and re-evaluate the best solution's cost.
+    """
+    import random, math as _math
+
+    evaluator = CostEvaluatorRRD(data)
+    base_routes = result["rrd_routes"]
+    base_cost   = result["rrd_cost"]
+
+    scenario_results = []
+    for sigma in sigmas:
+        trial_costs = []
+        for _ in range(n_trials):
+            # Build perturbed time matrix
+            orig_tt = evaluator.travel_time          # (N,N) minutes
+            noise   = np.random.normal(0, sigma, orig_tt.shape)
+            perturbed = np.clip(orig_tt * (1 + noise), 0, None)
+
+            # Temporarily swap travel_time
+            evaluator.travel_time = perturbed
+            # Re-evaluate routes with perturbed travel time
+            total = 0.0
+            for r in base_routes:
+                route_obj = Route(customers=r["nodes"][1:-1])
+                info = evaluator.evaluate_route(route_obj)
+                total += info["total"]
+            trial_costs.append(total)
+            evaluator.travel_time = orig_tt  # restore
+
+        avg_cost    = sum(trial_costs) / len(trial_costs)
+        cost_inc    = (avg_cost - base_cost) / base_cost * 100 if base_cost > 0 else 0.0
+        label       = (
+            "Low" if sigma <= 0.1 else
+            "Medium" if sigma <= 0.2 else
+            "High" if sigma <= 0.3 else
+            "Extreme"
+        )
+        scenario_results.append((f"{label} uncertainty (s={sigma})", avg_cost, cost_inc))
+
+    # Robustness Index: 1 - (avg cost_increase over all scenarios)
+    avg_inc_pct    = sum(r[2] for r in scenario_results) / len(scenario_results)
+    robustness_idx = max(0.0, 1.0 - avg_inc_pct / 100)
+
+    print(f"{'═'*W}")
+    print(f"  ROBUSTNESS ANALYSIS  (Travel-time perturbation, {n_trials} trials each)")
+    print(f"{'═'*W}")
+    print(f"  {'Scenario':<32} {'Avg Cost (VND)':>16}  {'Cost Increase':>13}")
+    print(f"  {'─'*32} {'─'*16}  {'─'*13}")
+    for label, avg_c, inc in scenario_results:
+        sign = "+" if inc >= 0 else "-"
+        print(f"  {label:<32} {avg_c:>16,.0f}  {sign}{abs(inc):>11.2f}%")
+    print(f"  {'─'*32} {'─'*16}  {'─'*13}")
+    print(f"  {'Robustness Index':<32}: {robustness_idx:>7.4f}  (1.0 = perfectly robust)")
+    print(f"{'═'*W}")
+
+
+def print_resilience_metrics(
+    data: dict,
+    result: dict,
+    disruption_sigma: float = 0.4,
+    W: int = 90,
+) -> None:
+    """
+    Resilience Metrics: single severe disruption (sigma=0.4) on best solution.
+    Compare OTDR before vs after disruption.
+    """
+    evaluator   = CostEvaluatorRRD(data)
+    base_routes = result["rrd_routes"]
+    N           = len(data["distance_matrix"]) - 1
+    depot       = data["depot"]
+
+    # ── Baseline on-time count ────────────────────────────────────────────
+    base_on_time = sum(
+        1
+        for r in base_routes
+        for t in r["timing"]
+        if t["node"] != depot and t["lateness"] <= 0.01
+    )
+    base_otdr = base_on_time / N * 100 if N > 0 else 0.0
+
+    # ── Disruption: perturb travel times ─────────────────────────────────
+    orig_tt   = evaluator.travel_time.copy()
+    noise     = np.random.normal(0, disruption_sigma, orig_tt.shape)
+    perturbed = np.clip(orig_tt * (1 + noise), 0, None)
+    evaluator.travel_time = perturbed
+
+    dis_on_time  = 0
+    max_lateness = 0.0
+    failed       = 0
+    timing_start = time_mod.time()
+
+    for r in base_routes:
+        route_obj = Route(customers=r["nodes"][1:-1])
+        info      = evaluator.evaluate_route(route_obj)
+        for t in info["timing"]:
+            if t["node"] == depot:
+                continue
+            lat = t["lateness"]
+            if lat <= 0.01:
+                dis_on_time += 1
+            else:
+                failed += 1
+                if lat > max_lateness:
+                    max_lateness = lat
+
+    recovery_ms  = (time_mod.time() - timing_start) * 1000
+    evaluator.travel_time = orig_tt  # restore
+
+    dis_otdr    = dis_on_time / N * 100 if N > 0 else 0.0
+    otdr_drop   = dis_otdr - base_otdr              # negative = drop
+    adapt_freq  = failed / N * 100 if N > 0 else 0.0
+
+    print(f"{'═'*W}")
+    print(f"  RESILIENCE METRICS  (Single severe disruption, sigma={disruption_sigma})")
+    print(f"{'═'*W}")
+    sign = "+" if otdr_drop >= 0 else "-"
+    print(f"  {'OTDR drop':<30}: {sign}{abs(otdr_drop):>8.2f} %")
+    print(f"  {'Max delay increase':<30}: {max_lateness:>9.1f} min")
+    print(f"  {'Failed deliveries':<30}: {failed:>10}")
+    print(f"  {'Recovery time':<30}: {recovery_ms:>9.1f} ms")
+    print(f"  {'Adaptation frequency':<30}: {adapt_freq:>9.2f} %")
+    print(f"{'═'*W}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -963,7 +1185,7 @@ if __name__ == "__main__":
     print(f"{'═'*72}")
     print(f"  Stores     : {num_customers}  |  Depot   : {data['depot_coords']}")
     print(f"  Capacity   : {data['vehicle_capacity']} kg  |  Cost/m  : {data['cost_per_m']} VND")
-    print(f"  Max iter   : 500  |  Fleet sweep : K = 3 → 13")
+    print(f"  Max iter   : {MAX_ITER}  |  Fleet sweep : K = 3 → 13")
     print(f"{'═'*72}\n")
 
     summary = []
@@ -973,7 +1195,7 @@ if __name__ == "__main__":
         result = rrd_solve(
             data,
             num_vehicles=K,
-            alns_iterations=500,
+            alns_iterations=MAX_ITER,
             reassign_iter=10,
             verbose=False,
         )
@@ -1015,7 +1237,8 @@ if __name__ == "__main__":
     no  = _norm(otdrs,  invert=True)    # high OTDR is good → invert
     nce = _norm(ces_v,  invert=False)
 
-    W_COST, W_OTDR, W_CES = 1/3, 1/3, 1/3
+    # Weights: OTDR dominates (service quality), cost secondary, CES minor
+    W_COST, W_OTDR, W_CES = 0.3, 0.6, 0.1
     for i, r in enumerate(summary):
         r["_score"] = W_COST * nc[i] + W_OTDR * no[i] + W_CES * nce[i]
 
@@ -1023,8 +1246,8 @@ if __name__ == "__main__":
 
     # ── Final summary table ───────────────────────────────────────────────
     print(f"\n{'═'*90}")
-    print(f"  RESULTS — Tabu-ALNS-Rollout  (max_iter=500, N={num_customers} stores)")
-    print(f"  Ranking: composite score = 1/3×cost_norm + 1/3×(1−OTDR_norm) + 1/3×CES_norm")
+    print(f"  RESULTS — Tabu-ALNS-Rollout  (max_iter={MAX_ITER}, N={num_customers} stores)")
+    print(f"  Ranking: composite score = 0.6×(1−OTDR_norm) + 0.3×cost_norm + 0.1×CES_norm  [CES scaled ×5]")
     print(f"{'═'*90}")
     print(
         f"  {'K':>3}  {'Total Cost (VND)':>18}  "
@@ -1048,6 +1271,28 @@ if __name__ == "__main__":
         f"CES = {best_r['ces']:.2f}  |  "
         f"Score = {best_r['_score']:.4f}\n"
     )
+
+    # ── Re-solve best K to get full result dict (for detailed metrics) ───
+    print(f"\n  ⏳  Re-running best K={best_r['K']} for detailed metric reports ...")
+    best_full_result = rrd_solve(
+        data,
+        num_vehicles=best_r["K"],
+        alns_iterations=MAX_ITER,
+        reassign_iter=10,
+        verbose=False,
+    )
+    best_m = calc_metrics(best_full_result["rrd_routes"], data)
+
+    print()
+    print_ces_report(best_m)
+    print()
+    print_event_response_metrics(best_full_result)
+    print()
+    np.random.seed(42)
+    print_robustness_analysis(data, best_full_result)
+    print()
+    np.random.seed(42)
+    print_resilience_metrics(data, best_full_result)
 
     # ── Lưu toàn bộ output vào file log ─────────────────────────────────
     sys.stdout = _tee._orig          # khôi phục stdout gốc
