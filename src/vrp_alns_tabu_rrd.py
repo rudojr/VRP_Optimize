@@ -2,7 +2,7 @@ import copy
 import math
 import time as time_mod
 from typing import List, Tuple, Dict, Optional
-
+import random as _rnd
 import numpy as np
 import pandas as pd
 
@@ -19,8 +19,6 @@ from vrp_alns_tabu import (
     generate_congestion_matrix,
 )
 
-
-
 class CostEvaluatorRRD(CostEvaluator):
 
 
@@ -28,7 +26,6 @@ class CostEvaluatorRRD(CostEvaluator):
         super().__init__(data)                         
         time_h: np.ndarray = data["time_matrix_h"]    
         self.travel_time = time_h * 60.0              
-
 
 
 class _GreedyTWPolicy:
@@ -1316,108 +1313,187 @@ def print_demand_sensitivity(
     W: int = 100,
 ) -> None:
     """
-    Sensitivity analysis: chạy lại solver với demand ±10% cho MỖI store.
-    So sánh kết quả (cost, OTDR) với baseline để đánh giá tác động.
+    Sensitivity analysis: thay đổi demand TOÀN BỘ stores đồng thời ±10%, ±20%, ±30%.
+    Với mỗi scenario, chạy mini fleet-sweep (K = best_K-2 → best_K+2)
+    để tìm K tối ưu mới, rồi so sánh cost, OTDR, số xe active với baseline.
     """
     import random as _rnd
 
     baseline_demands = list(data["demands"])
     num_stores = len(baseline_demands) - 1  # bỏ depot
+    total_base_demand = sum(baseline_demands[1:])
+
+    # ── Fleet sweep range ─────────────────────────────────────────────────
+    K_lo = max(1, best_K - 2)
+    K_hi = best_K + 2
 
     print(f"{'═'*W}")
-    print(f"  DEMAND SENSITIVITY ANALYSIS  (±10% per store)")
-    print(f"  Baseline demands → perturb each store's demand by +10% and −10%")
-    print(f"  K = {best_K}  |  {num_stores} stores")
+    print(f"  DEMAND SENSITIVITY ANALYSIS  (Global demand perturbation)")
+    print(f"  Perturb ALL stores' demand simultaneously by ±10%, ±20%, ±30%")
+    print(f"  Baseline K = {best_K}  |  Fleet sweep: K = {K_lo}→{K_hi}  |  {num_stores} stores")
+    print(f"  Total baseline demand = {total_base_demand:,.1f} kg  |  Capacity = {data['vehicle_capacity']} kg")
     print(f"{'═'*W}")
 
-    # ── Run baseline ──────────────────────────────────────────────────────
-    base_result = rrd_solve(
-        data,
-        num_vehicles=best_K,
-        alns_iterations=alns_iterations,
-        reassign_iter=reassign_iter,
-        verbose=False,
-    )
-    base_cost = base_result["rrd_cost"]
-    base_m    = calc_metrics(base_result["rrd_routes"], data)
-    base_otdr = base_m["otdr"]
-
-    print(f"\n  Baseline        : cost = {base_cost:>15,.0f} VND  |  OTDR = {base_otdr:.2f}%")
-    print(f"  {'─'*94}")
-    print(
-        f"  {'Store':<28} {'Demand':<10} {'Perturbation':<14} "
-        f"{'Cost (VND)':<18} {'Δ Cost':<16} {'Δ%':<9} {'OTDR':<8}"
-    )
-    print(
-        f"  {'─'*28} {'─'*10} {'─'*14} "
-        f"{'─'*18} {'─'*16} {'─'*9} {'─'*8}"
-    )
-
-    store_names = data["store_names"]
-    results_sens = []
-
-    for store_id in range(1, num_stores + 1):
-        orig_demand = baseline_demands[store_id]
-
-        for pct_label, factor in [("−10%", 0.90), ("+10%", 1.10)]:
-            # Perturb demand for this store only
-            perturbed_demands = list(baseline_demands)
-            perturbed_demands[store_id] = orig_demand * factor
-            data["demands"] = perturbed_demands
-
-            p_result = rrd_solve(
+    # ── Helper: run mini fleet sweep, return best result ──────────────────
+    def _sweep_best(demands_list, k_range, seed_offset=0):
+        """Run solver for each K in k_range, return best by composite score."""
+        data["demands"] = demands_list
+        sweep = []
+        for K in k_range:
+            np.random.seed(42 + seed_offset)
+            _rnd.seed(42 + seed_offset)
+            res = rrd_solve(
                 data,
-                num_vehicles=best_K,
+                num_vehicles=K,
                 alns_iterations=alns_iterations,
                 reassign_iter=reassign_iter,
                 verbose=False,
             )
-            p_cost = p_result["rrd_cost"]
-            p_m    = calc_metrics(p_result["rrd_routes"], data)
-            p_otdr = p_m["otdr"]
-
-            delta     = p_cost - base_cost
-            delta_pct = delta / base_cost * 100 if base_cost > 0 else 0.0
-            sign      = "+" if delta >= 0 else ""
-
-            sname = store_names[store_id][:27]
-            print(
-                f"  {sname:<28} {orig_demand:<10.1f} {pct_label:<14} "
-                f"{p_cost:<18,.0f} {sign}{delta:<15,.0f} {sign}{delta_pct:<8.2f}% {p_otdr:<8.2f}%"
-            )
-
-            results_sens.append({
-                "store_id":   store_id,
-                "store_name": store_names[store_id],
-                "original":   orig_demand,
-                "perturbed":  perturbed_demands[store_id],
-                "label":      pct_label,
-                "cost":       p_cost,
-                "delta":      delta,
-                "delta_pct":  delta_pct,
-                "otdr":       p_otdr,
+            m = calc_metrics(res["rrd_routes"], data)
+            n_active = sum(1 for r in res["rrd_routes"] if len(r["nodes"]) > 2)
+            sweep.append({
+                "K": K, "cost": res["rrd_cost"], "otdr": m["otdr"],
+                "ces": m["ces"], "n_active": n_active, "result": res,
             })
+        # Composite score (same weights as main sweep)
+        costs = [s["cost"] for s in sweep]
+        otdrs = [s["otdr"] for s in sweep]
+        ces_v = [s["ces"]  for s in sweep]
+        def _norm(vals, invert=False):
+            lo, hi = min(vals), max(vals)
+            span = hi - lo if hi > lo else 1.0
+            if invert:
+                return [(hi - v) / span for v in vals]
+            return [(v - lo) / span for v in vals]
+        nc  = _norm(costs)
+        no  = _norm(otdrs, invert=True)
+        nce = _norm(ces_v)
+        for i, s in enumerate(sweep):
+            s["_score"] = 0.3 * nc[i] + 0.6 * no[i] + 0.1 * nce[i]
+        return min(sweep, key=lambda x: x["_score"])
+
+    # ── Run baseline sweep ────────────────────────────────────────────────
+    base_best = _sweep_best(list(baseline_demands), range(K_lo, K_hi + 1), seed_offset=0)
+    base_cost    = base_best["cost"]
+    base_otdr    = base_best["otdr"]
+    base_K_opt   = base_best["K"]
+    base_active  = base_best["n_active"]
+
+    print(f"\n  Baseline (0%)")
+    print(f"    Total demand : {total_base_demand:>12,.1f} kg")
+    print(f"    Best K       : {base_K_opt:>12}")
+    print(f"    Active veh.  : {base_active:>12}")
+    print(f"    Cost         : {base_cost:>12,.0f} VND")
+    print(f"    OTDR         : {base_otdr:>11.2f}%")
+
+    # ── Scenarios ─────────────────────────────────────────────────────────
+    scenarios = [
+        ("−30%", 0.70),
+        ("−20%", 0.80),
+        ("−10%", 0.90),
+        ("+10%", 1.10),
+        ("+20%", 1.20),
+        ("+30%", 1.30),
+    ]
+
+    results_sens = []
+
+    print(f"\n  {'─'*96}")
+    print(
+        f"  {'Scenario':<12} {'Tot.Demand':<13} {'Best K':<8} {'Active':<8} "
+        f"{'Cost (VND)':<18} {'Δ Cost':<16} {'Δ%':<10} {'OTDR':<9} {'ΔOTDR':<9}"
+    )
+    print(
+        f"  {'─'*12} {'─'*13} {'─'*8} {'─'*8} "
+        f"{'─'*18} {'─'*16} {'─'*10} {'─'*9} {'─'*9}"
+    )
+
+    for idx, (label, factor) in enumerate(scenarios):
+        # Perturb ALL store demands by the same factor (depot stays 0)
+        perturbed = list(baseline_demands)
+        for sid in range(1, num_stores + 1):
+            perturbed[sid] = baseline_demands[sid] * factor
+
+        tot_demand = sum(perturbed[1:])
+
+        # Run mini fleet sweep with different seed offset per scenario
+        best_s = _sweep_best(perturbed, range(K_lo, K_hi + 1), seed_offset=idx + 1)
+
+        p_cost   = best_s["cost"]
+        p_otdr   = best_s["otdr"]
+        p_K      = best_s["K"]
+        p_active = best_s["n_active"]
+
+        delta       = p_cost - base_cost
+        delta_pct   = delta / base_cost * 100 if base_cost > 0 else 0.0
+        delta_otdr  = p_otdr - base_otdr
+        cost_sign   = "+" if delta >= 0 else ""
+        otdr_sign   = "+" if delta_otdr >= 0 else ""
+
+        k_note = f" (was {base_K_opt})" if p_K != base_K_opt else ""
+
+        print(
+            f"  {label:<12} {tot_demand:<13,.1f} {p_K:<8}{k_note:>0} "
+            f"{p_active:<8} {p_cost:<18,.0f} "
+            f"{cost_sign}{delta:<15,.0f} {cost_sign}{delta_pct:<9.2f}% "
+            f"{p_otdr:<9.2f}%{otdr_sign}{delta_otdr:<8.2f}%"
+        )
+
+        results_sens.append({
+            "label":      label,
+            "factor":     factor,
+            "tot_demand": tot_demand,
+            "best_K":     p_K,
+            "n_active":   p_active,
+            "cost":       p_cost,
+            "delta":      delta,
+            "delta_pct":  delta_pct,
+            "otdr":       p_otdr,
+            "delta_otdr": delta_otdr,
+        })
 
     # Restore original demands
     data["demands"] = baseline_demands
 
     # ── Summary ───────────────────────────────────────────────────────────
-    plus_deltas  = [r["delta_pct"] for r in results_sens if r["label"] == "+10%"]
-    minus_deltas = [r["delta_pct"] for r in results_sens if r["label"] == "−10%"]
+    inc_scenarios = [r for r in results_sens if r["factor"] > 1.0]
+    dec_scenarios = [r for r in results_sens if r["factor"] < 1.0]
 
-    avg_plus   = sum(plus_deltas) / len(plus_deltas) if plus_deltas else 0
-    avg_minus  = sum(minus_deltas) / len(minus_deltas) if minus_deltas else 0
+    avg_inc_cost = (sum(r["delta_pct"] for r in inc_scenarios) / len(inc_scenarios)
+                    if inc_scenarios else 0)
+    avg_dec_cost = (sum(r["delta_pct"] for r in dec_scenarios) / len(dec_scenarios)
+                    if dec_scenarios else 0)
+    avg_inc_otdr = (sum(r["delta_otdr"] for r in inc_scenarios) / len(inc_scenarios)
+                    if inc_scenarios else 0)
+    avg_dec_otdr = (sum(r["delta_otdr"] for r in dec_scenarios) / len(dec_scenarios)
+                    if dec_scenarios else 0)
+
+    # Check if optimal K changed in any scenario
+    k_changes = [r for r in results_sens if r["best_K"] != base_K_opt]
+
     max_impact = max(results_sens, key=lambda r: abs(r["delta_pct"]))
 
-    print(f"\n  {'─'*94}")
+    print(f"\n  {'─'*96}")
     print(f"  SENSITIVITY SUMMARY")
-    print(f"  Avg cost change  (+10% demand): {'+' if avg_plus>=0 else ''}{avg_plus:.2f}%")
-    print(f"  Avg cost change  (−10% demand): {'+' if avg_minus>=0 else ''}{avg_minus:.2f}%")
+    print(f"  {'─'*96}")
+    print(f"  Avg cost change  (demand increase): {'+' if avg_inc_cost>=0 else ''}{avg_inc_cost:.2f}%")
+    print(f"  Avg cost change  (demand decrease): {'+' if avg_dec_cost>=0 else ''}{avg_dec_cost:.2f}%")
+    print(f"  Avg OTDR change  (demand increase): {'+' if avg_inc_otdr>=0 else ''}{avg_inc_otdr:.2f}%")
+    print(f"  Avg OTDR change  (demand decrease): {'+' if avg_dec_otdr>=0 else ''}{avg_dec_otdr:.2f}%")
     print(
-        f"  Most sensitive store: {max_impact['store_name']} "
-        f"({max_impact['label']}) → Δ = {'+' if max_impact['delta_pct']>=0 else ''}"
-        f"{max_impact['delta_pct']:.2f}%"
+        f"  Most impactful scenario : {max_impact['label']}  →  "
+        f"Δcost = {'+' if max_impact['delta_pct']>=0 else ''}{max_impact['delta_pct']:.2f}%"
+        f"  |  OTDR = {max_impact['otdr']:.2f}%"
     )
+    if k_changes:
+        for kc in k_changes:
+            print(
+                f"  ⚠ Optimal K changed at {kc['label']}: "
+                f"K = {base_K_opt} → {kc['best_K']}  "
+                f"(active vehicles: {kc['n_active']})"
+            )
+    else:
+        print(f"  ✓ Optimal K = {base_K_opt} remains stable across all scenarios")
     print(f"{'═'*W}")
 
 
