@@ -128,12 +128,14 @@ class EventDrivenRolloutDispatcher:
         data: dict,
         evaluator: CostEvaluator,
         urgency_threshold: float = 0.65,
+        n_mc_sims: int = 5,
     ):
-        self.data    = data
-        self.ev      = evaluator
-        self.depot   = data["depot"]
-        self.u_thresh = urgency_threshold
-        self.policy  = _GreedyTWPolicy(evaluator)   # base policy cho rollout completion
+        self.data      = data
+        self.ev        = evaluator
+        self.depot     = data["depot"]
+        self.u_thresh  = urgency_threshold
+        self.n_mc_sims = n_mc_sims          # Monte Carlo rollout iterations
+        self.policy    = _GreedyTWPolicy(evaluator)   # base policy cho rollout completion
 
     # ── Urgency calculation (Eq. 34 approximation) ───────────────────────────
 
@@ -179,10 +181,14 @@ class EventDrivenRolloutDispatcher:
         from_node: int,
         from_time: float,
         unvisited: List[int],
-    ) -> Tuple[int, float]:
-        """Chọn next stop tối ưu qua 1-step lookahead + greedy completion."""
+    ) -> Tuple[int, float, float]:
+        """
+        Chọn next stop tối ưu qua 1-step lookahead + greedy completion.
+        Returns (best_next, best_cost, second_best_cost).
+        """
         best_next = None
         best_cost = float("inf")
+        second_best_cost = float("inf")
 
         for candidate in unvisited:
             tt_to    = self.ev.travel_time[from_node][candidate]
@@ -202,31 +208,29 @@ class EventDrivenRolloutDispatcher:
             total           = step_cost + completion_cost
 
             if total < best_cost:
+                second_best_cost = best_cost
                 best_cost = total
                 best_next = candidate
+            elif total < second_best_cost:
+                second_best_cost = total
 
-        return best_next, best_cost
+        return best_next, best_cost, second_best_cost
 
-    # ── Main dispatch loop ────────────────────────────────────────────────────
 
     def dispatch_route(
         self,
         planned_customers: List[int],
     ) -> Tuple[Route, List[dict]]:
-        """
-        Simulate event-driven execution của một route.
 
-        planned_customers : thứ tự từ ALNS/Phase-2a ("kế hoạch")
-        Returns           : (Route thực thi, timing_log kèm event marker)
-        """
         if not planned_customers:
             return Route(), []
 
         current_node = self.depot
         current_time = float(self.ev.tw[self.depot][0])
         unvisited    = list(planned_customers)
-        plan_queue   = list(planned_customers)   # bản sao kế hoạch ALNS
+        plan_queue   = list(planned_customers)  
         sequence: List[int] = []
+        cum_load     = 0.0                      
         timing_log   = [{
             "node": self.depot, "arrival": current_time,
             "lateness": 0.0, "event": "START",
@@ -235,16 +239,92 @@ class EventDrivenRolloutDispatcher:
         while unvisited:
             urgency, _ = self._calc_urgency(current_node, current_time, unvisited)
 
+            extra = {}  
+
             if urgency > self.u_thresh:
-                # ── EVENT triggered: rollout chọn next stop tốt nhất ────────
-                next_stop, sim_cost = self._rollout_next_stop(
-                    current_node, current_time, unvisited
-                )
+                # ── EVENT triggered: Monte Carlo rollout ──────────────────
+                t0_perf = time_mod.perf_counter()
+
+                orig_tt = self.ev.travel_time.copy()
+                mc_votes: Dict[int, int] = {}
+                mc_best_costs: Dict[int, List[float]] = {}
+                mc_2nd_costs: List[float] = []
+                actual_sims = 0
+
+                for mc_i in range(self.n_mc_sims):
+                    # Perturbation nhẹ cho MC (trừ sim đầu tiên dùng tt gốc)
+                    if mc_i > 0:
+                        noise = np.random.normal(0, 0.05, orig_tt.shape)
+                        self.ev.travel_time = np.clip(
+                            orig_tt * (1 + noise), 0, None
+                        )
+                        self.policy._tt = self.ev.travel_time
+
+                    mc_next, mc_cost, mc_2nd = self._rollout_next_stop(
+                        current_node, current_time, unvisited
+                    )
+                    mc_votes[mc_next] = mc_votes.get(mc_next, 0) + 1
+                    mc_best_costs.setdefault(mc_next, []).append(mc_cost)
+                    mc_2nd_costs.append(mc_2nd)
+                    actual_sims += 1
+
+                # Restore original travel times
+                self.ev.travel_time = orig_tt
+                self.policy._tt     = orig_tt
+
+                # Consensus: pick the most-voted candidate
+                next_stop  = max(mc_votes, key=mc_votes.get)
+                sim_cost   = float(np.mean(mc_best_costs[next_stop]))
+                second_best_cost = float(np.mean(mc_2nd_costs))
+
+                response_ms  = (time_mod.perf_counter() - t0_perf) * 1000
+                n_candidates = len(unvisited)
+
+                # ── Cost impact: rollout vs plan (or vs 2nd-best) ────────
+                plan_next = None
+                for pq in list(plan_queue):
+                    if pq in unvisited:
+                        plan_next = pq
+                        break
+
+                cost_impact_pct = 0.0
+                if plan_next is not None and plan_next != next_stop:
+                    # Rollout chose differently from plan → compare costs
+                    svc_p    = self.ev.s_time if current_node != self.depot else 0
+                    tt_p     = self.ev.travel_time[current_node][plan_next]
+                    cong_p   = self.ev.cong[current_node][plan_next]
+                    arrive_p = max(current_time + svc_p + tt_p,
+                                   float(self.ev.tw[plan_next][0]))
+                    late_p   = max(0.0, arrive_p - float(self.ev.tw[plan_next][1]))
+                    step_p   = (self.ev.dist[current_node][plan_next] * self.ev.cpk
+                                + self.ev.lam2 * cong_p
+                                + self.ev.lam1 * late_p)
+                    rem_p    = [c for c in unvisited if c != plan_next]
+                    compl_p  = self.policy.simulate(plan_next, arrive_p, rem_p)
+                    plan_tot = step_p + compl_p
+                    if plan_tot > 0:
+                        cost_impact_pct = (plan_tot - sim_cost) / plan_tot * 100
+                elif second_best_cost < float("inf") and second_best_cost > 0:
+                    # Rollout confirmed plan → margin vs 2nd-best alternative
+                    cost_impact_pct = (second_best_cost - sim_cost) / second_best_cost * 100
+
+                cong_arc = int(self.ev.cong[current_node][next_stop])
+                load_pct = cum_load / self.ev.Q * 100 if self.ev.Q > 0 else 0
+
+                extra = {
+                    "response_ms":     response_ms,
+                    "n_candidates":    n_candidates,
+                    "n_mc_sims":       actual_sims,
+                    "urgency_val":     urgency,
+                    "cong_arc":        cong_arc,
+                    "route_load_pct":  load_pct,
+                    "cost_impact_pct": cost_impact_pct,
+                }
+
                 event_type = f"ROLLOUT (u={urgency:.2f})"
                 if next_stop in plan_queue:
                     plan_queue.remove(next_stop)
             else:
-                # ── Không urgent: follow ALNS plan ──────────────────────────
                 next_stop = None
                 while plan_queue:
                     candidate = plan_queue.pop(0)
@@ -263,13 +343,17 @@ class EventDrivenRolloutDispatcher:
             arrive   = max(arrive, float(self.ev.tw[next_stop][0]))
             lateness = max(0.0, arrive - float(self.ev.tw[next_stop][1]))
 
-            timing_log.append({
+            cum_load += self.ev.demands[next_stop]
+
+            entry = {
                 "node":     next_stop,
                 "arrival":  arrive,
                 "lateness": lateness,
                 "sim_cost": sim_cost,
                 "event":    event_type,
-            })
+            }
+            entry.update(extra)
+            timing_log.append(entry)
 
             sequence.append(next_stop)
             current_node = next_stop
@@ -279,7 +363,6 @@ class EventDrivenRolloutDispatcher:
         return Route(customers=sequence), timing_log
 
     def dispatch_all(self, solution: Solution) -> Tuple[Solution, list]:
-        """Apply event-driven dispatch to every route; return stats."""
         new_routes  = []
         timing_logs = []
 
@@ -300,43 +383,16 @@ class EventDrivenRolloutDispatcher:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class RolloutReassigner:
-    """
-    Inter-route customer reassignment với EXACT cost evaluation + rollout sequencing.
-
-    Thuật toán:
-    -----------
-    for iteration in range(max_iter):
-        improved = False
-        for each customer c in each route s:
-            cost_s_cur = exact_cost(route_s)
-            cost_s_new = exact_cost(route_s - {c})  # sau khi xóa c
-            for each target route t != s:
-                if capacity OK:
-                    best_insert_pos = rollout chọn vị trí chèn tốt nhất
-                    cost_t_new = exact_cost(route_t + {c} at best_insert_pos)
-                    delta = (cost_s_new + cost_t_new) - (cost_s_cur + cost_t_cur)
-                    if delta < -eps → accept move
-        if not improved → break
-
-    Key insight: Dùng EXACT evaluation để tránh sai lệch từ greedy approximation.
-    Rollout chỉ được dùng để TÌM vị trí chèn tốt hơn (không phải để evaluate delta).
-    """
-
     def __init__(self, evaluator: CostEvaluator, max_iter: int = 10):
         self.ev       = evaluator
         self.max_iter = max_iter
 
     def _exact_cost(self, customers: List[int]) -> float:
-        """Exact route cost evaluation."""
         if not customers:
             return 0.0
         return self.ev.evaluate_route(Route(customers=customers))["total"]
 
     def _best_insert_position(self, customers: List[int], new_cust: int) -> Tuple[int, float]:
-        """
-        Tìm vị trí chèn tốt nhất cho new_cust vào route [customers] bằng exact evaluation.
-        Returns (best_pos, best_cost).
-        """
         best_cost = float("inf")
         best_pos  = 0
         for pos in range(len(customers) + 1):
@@ -471,7 +527,6 @@ class RolloutReassigner:
                             best_delta = delta
                             best_move  = (cust, s_idx, c_pos, t_idx, ins_pos)
 
-            # Apply best move nếu có
             if best_move is not None:
                 cust, s_idx, c_pos, t_idx, ins_pos = best_move
                 custs_s = sol.routes[s_idx].customers
@@ -1135,6 +1190,410 @@ def print_resilience_metrics(
     print(f"{'═'*W}")
 
 
+def print_best_k_routes(data: dict, result: dict, best_K: int = 0, W: int = 100) -> None:
+    """
+    In chi tiết tuyến đường từng xe sau khi tìm ra K best.
+    Mỗi xe hiển thị: thứ tự stops, tên CH, thời gian đến, TW, trễ, demand, tải lũy kế.
+    """
+    store_names = data["store_names"]
+    tw          = data["time_windows"]
+    demands     = data["demands"]
+    cong        = data["congestion_matrix"]
+    Q           = data["vehicle_capacity"]
+    depot       = data["depot"]
+
+    routes_info  = result["rrd_routes"]
+    n_active     = len(routes_info)
+    k_label      = best_K if best_K > 0 else n_active
+
+    print(f"{'═'*W}")
+    print(f"  DETAILED ROUTES — Best K = {k_label}  ({n_active} active vehicles)")
+    print(f"{'═'*W}")
+
+    total_transport = 0
+    total_late      = 0
+    total_cong      = 0
+    total_served    = 0
+
+    for r in routes_info:
+        nodes  = r["nodes"]
+        timing = r["timing"]
+        v_id   = r["vehicle"] + 1
+
+        print(f"\n{'─'*W}")
+        print(f"  Vehicle {v_id}  |  Load: {r['load_kg']:.1f} / {Q} kg  "
+              f"|  Distance: {r['distance_km']:.2f} km  |  Cost: {r['total_cost']:,.0f} VND")
+        print(f"{'─'*W}")
+        print(
+            f"  {'#':<4} {'Store':<28} {'Arrive':<8} {'TW':<14} "
+            f"{'Late':<8} {'Demand':<10} {'CumLoad':<10} {'Congestion':<15}"
+        )
+        print(
+            f"  {'─'*4} {'─'*28} {'─'*8} {'─'*14} "
+            f"{'─'*8} {'─'*10} {'─'*10} {'─'*15}"
+        )
+
+        cum_load = 0.0
+        n_customers_in_route = 0
+
+        for idx, t in enumerate(timing):
+            node   = t["node"]
+            name   = store_names[node][:27]
+            s_min  = t["service_start"]
+            late   = t["lateness"]
+
+            arrival_str = f"{int(s_min) // 60}:{int(s_min) % 60:02d}"
+            tw_s, tw_e  = tw[node]
+            tw_str      = f"{tw_s//60}:{tw_s%60:02d}-{tw_e//60}:{tw_e%60:02d}"
+            late_str    = f"+{late:.0f}m" if late > 0.01 else "✓"
+
+            # Demand and cumulative load
+            d = demands[node]
+            cum_load += d
+            demand_str  = f"{d:.1f}" if node != depot else "—"
+            cumload_str = f"{cum_load:.1f}" if node != depot else "—"
+
+            # Congestion from previous node
+            if idx > 0:
+                prev = nodes[idx - 1]
+                cong_level = cong[prev][node]
+                cong_str = CONGESTION_LABELS.get(cong_level, "?")
+            else:
+                cong_str = "—"
+
+            if node != depot:
+                n_customers_in_route += 1
+
+            print(
+                f"  {idx:<4} {name:<28} {arrival_str:<8} {tw_str:<14} "
+                f"{late_str:<8} {demand_str:<10} {cumload_str:<10} {cong_str:<15}"
+            )
+
+        total_transport += r["transport_cost"]
+        total_late      += r["late_penalty"]
+        total_cong      += r["congestion_cost"]
+        total_served    += n_customers_in_route
+
+        # Route summary
+        print(f"  ├─ Transport : {r['transport_cost']:>12,.0f} VND")
+        if r["late_penalty"] > 0:
+            print(f"  ├─ Late pen. : {r['late_penalty']:>12,.0f} VND")
+        print(f"  ├─ Congestion: {r['congestion_cost']:>12,.0f} VND")
+        print(f"  └─ Subtotal  : {r['total_cost']:>12,.0f} VND")
+
+    # Grand summary
+    grand_total = total_transport + total_late + total_cong
+    print(f"\n{'═'*W}")
+    print(f"  ROUTE SUMMARY — K = {k_label}, {n_active} active vehicles, {total_served} stores served")
+    print(f"{'═'*W}")
+    print(f"  Transport cost    : {total_transport:>15,.0f} VND")
+    print(f"  Delay penalty     : {total_late:>15,.0f} VND")
+    print(f"  Congestion cost   : {total_cong:>15,.0f} VND")
+    print(f"  ──────────────────────────────────────")
+    print(f"  GRAND TOTAL       : {grand_total:>15,.0f} VND")
+
+    # List dropped stores
+    all_customers = set(range(1, len(data["distance_matrix"])))
+    visited = set()
+    for r in routes_info:
+        for node in r["nodes"]:
+            if node != depot:
+                visited.add(node)
+    dropped = all_customers - visited
+    if dropped:
+        dropped_names = [store_names[n] for n in sorted(dropped)]
+        print(f"\n  ⚠ Dropped stores ({len(dropped)}): {', '.join(dropped_names)}")
+    else:
+        print(f"\n  ✅ All {len(all_customers)} stores visited!")
+    print(f"{'═'*W}")
+
+
+def print_demand_sensitivity(
+    data: dict,
+    best_K: int,
+    alns_iterations: int = 50,
+    reassign_iter: int = 10,
+    W: int = 100,
+) -> None:
+    """
+    Sensitivity analysis: chạy lại solver với demand ±10% cho MỖI store.
+    So sánh kết quả (cost, OTDR) với baseline để đánh giá tác động.
+    """
+    import random as _rnd
+
+    baseline_demands = list(data["demands"])
+    num_stores = len(baseline_demands) - 1  # bỏ depot
+
+    print(f"{'═'*W}")
+    print(f"  DEMAND SENSITIVITY ANALYSIS  (±10% per store)")
+    print(f"  Baseline demands → perturb each store's demand by +10% and −10%")
+    print(f"  K = {best_K}  |  {num_stores} stores")
+    print(f"{'═'*W}")
+
+    # ── Run baseline ──────────────────────────────────────────────────────
+    base_result = rrd_solve(
+        data,
+        num_vehicles=best_K,
+        alns_iterations=alns_iterations,
+        reassign_iter=reassign_iter,
+        verbose=False,
+    )
+    base_cost = base_result["rrd_cost"]
+    base_m    = calc_metrics(base_result["rrd_routes"], data)
+    base_otdr = base_m["otdr"]
+
+    print(f"\n  Baseline        : cost = {base_cost:>15,.0f} VND  |  OTDR = {base_otdr:.2f}%")
+    print(f"  {'─'*94}")
+    print(
+        f"  {'Store':<28} {'Demand':<10} {'Perturbation':<14} "
+        f"{'Cost (VND)':<18} {'Δ Cost':<16} {'Δ%':<9} {'OTDR':<8}"
+    )
+    print(
+        f"  {'─'*28} {'─'*10} {'─'*14} "
+        f"{'─'*18} {'─'*16} {'─'*9} {'─'*8}"
+    )
+
+    store_names = data["store_names"]
+    results_sens = []
+
+    for store_id in range(1, num_stores + 1):
+        orig_demand = baseline_demands[store_id]
+
+        for pct_label, factor in [("−10%", 0.90), ("+10%", 1.10)]:
+            # Perturb demand for this store only
+            perturbed_demands = list(baseline_demands)
+            perturbed_demands[store_id] = orig_demand * factor
+            data["demands"] = perturbed_demands
+
+            p_result = rrd_solve(
+                data,
+                num_vehicles=best_K,
+                alns_iterations=alns_iterations,
+                reassign_iter=reassign_iter,
+                verbose=False,
+            )
+            p_cost = p_result["rrd_cost"]
+            p_m    = calc_metrics(p_result["rrd_routes"], data)
+            p_otdr = p_m["otdr"]
+
+            delta     = p_cost - base_cost
+            delta_pct = delta / base_cost * 100 if base_cost > 0 else 0.0
+            sign      = "+" if delta >= 0 else ""
+
+            sname = store_names[store_id][:27]
+            print(
+                f"  {sname:<28} {orig_demand:<10.1f} {pct_label:<14} "
+                f"{p_cost:<18,.0f} {sign}{delta:<15,.0f} {sign}{delta_pct:<8.2f}% {p_otdr:<8.2f}%"
+            )
+
+            results_sens.append({
+                "store_id":   store_id,
+                "store_name": store_names[store_id],
+                "original":   orig_demand,
+                "perturbed":  perturbed_demands[store_id],
+                "label":      pct_label,
+                "cost":       p_cost,
+                "delta":      delta,
+                "delta_pct":  delta_pct,
+                "otdr":       p_otdr,
+            })
+
+    # Restore original demands
+    data["demands"] = baseline_demands
+
+    # ── Summary ───────────────────────────────────────────────────────────
+    plus_deltas  = [r["delta_pct"] for r in results_sens if r["label"] == "+10%"]
+    minus_deltas = [r["delta_pct"] for r in results_sens if r["label"] == "−10%"]
+
+    avg_plus   = sum(plus_deltas) / len(plus_deltas) if plus_deltas else 0
+    avg_minus  = sum(minus_deltas) / len(minus_deltas) if minus_deltas else 0
+    max_impact = max(results_sens, key=lambda r: abs(r["delta_pct"]))
+
+    print(f"\n  {'─'*94}")
+    print(f"  SENSITIVITY SUMMARY")
+    print(f"  Avg cost change  (+10% demand): {'+' if avg_plus>=0 else ''}{avg_plus:.2f}%")
+    print(f"  Avg cost change  (−10% demand): {'+' if avg_minus>=0 else ''}{avg_minus:.2f}%")
+    print(
+        f"  Most sensitive store: {max_impact['store_name']} "
+        f"({max_impact['label']}) → Δ = {'+' if max_impact['delta_pct']>=0 else ''}"
+        f"{max_impact['delta_pct']:.2f}%"
+    )
+    print(f"{'═'*W}")
+
+
+def _classify_event(entry: dict) -> str:
+    """
+    Phân loại một ROLLOUT event vào 1 trong 4 loại:
+      - Time Violations      : có lateness tại node được chọn
+      - Traffic Incidents     : cung (arc) có congestion ≥ 2
+      - Capacity Violations   : tải route ≥ 70% capacity
+      - Urgent Deliveries     : còn lại (urgency cao nhưng không rơi vào 3 loại trên)
+    """
+    lateness = entry.get("lateness", 0)
+    cong_arc = entry.get("cong_arc", 0)
+    load_pct = entry.get("route_load_pct", 0)
+
+    if lateness > 0.01:
+        return "Time Violations"
+    if cong_arc >= 2:
+        return "Traffic Incidents"
+    if load_pct >= 70:
+        return "Capacity Violations"
+    return "Urgent Deliveries"
+
+
+def print_realtime_event_performance(
+    data: dict,
+    result: dict,
+    n_trials: int = 10,
+    W: int = 110,
+) -> None:
+    """
+    Table 8  —  T-ALNS-RRD real-time event response performance.
+
+    Chỉ re-run Phase 2b (dispatch) với travel-time perturbation nhẹ (σ=0.08)
+    để tạo biến thiên giữa các trial → tính mean ± std.
+    Không chạy lại ALNS (Phase 1) nên rất nhanh.
+    """
+    categories = [
+        "Traffic Incidents",
+        "Urgent Deliveries",
+        "Capacity Violations",
+        "Time Violations",
+    ]
+
+    # Reconstruct solution object từ result
+    routes   = [Route(customers=r["nodes"][1:-1]) for r in result["rrd_routes"]]
+    base_sol = Solution(routes=routes)
+
+    # ── Per-trial collection ──────────────────────────────────────────────
+    trial_data = {
+        cat: {"freq": [], "resp": [], "success": [], "cost_imp": [], "sims": []}
+        for cat in categories
+    }
+
+    for trial in range(n_trials):
+        np.random.seed(42 + trial * 13)
+
+        evaluator = CostEvaluatorRRD(data)
+
+        # Perturbation nhẹ giữa các trial để tạo ±std
+        if trial > 0:
+            noise = np.random.normal(0, 0.08, evaluator.travel_time.shape)
+            evaluator.travel_time = np.clip(
+                evaluator.travel_time * (1 + noise), 0, None
+            )
+
+        dispatcher = EventDrivenRolloutDispatcher(data, evaluator, 0.65)
+        _, timing_logs = dispatcher.dispatch_all(base_sol)
+
+        # Classify ROLLOUT events
+        events_by_cat = {cat: [] for cat in categories}
+        for logs in timing_logs:
+            for entry in logs:
+                if not entry.get("event", "").startswith("ROLLOUT"):
+                    continue
+                cat = _classify_event(entry)
+                events_by_cat[cat].append(entry)
+
+        # Per-category metrics cho trial này
+        for cat in categories:
+            evts = events_by_cat[cat]
+            n = len(evts)
+            trial_data[cat]["freq"].append(n)
+            if n > 0:
+                trial_data[cat]["resp"].append(
+                    np.mean([e.get("response_ms", 0) for e in evts])
+                )
+                trial_data[cat]["success"].append(
+                    sum(1 for e in evts if e.get("lateness", 1) <= 0.01) / n * 100
+                )
+                trial_data[cat]["cost_imp"].append(
+                    np.mean([abs(e.get("cost_impact_pct", 0)) for e in evts])
+                )
+                trial_data[cat]["sims"].append(
+                    np.mean([e.get("n_mc_sims", 0) for e in evts])
+                )
+            else:
+                trial_data[cat]["resp"].append(0.0)
+                trial_data[cat]["success"].append(100.0)
+                trial_data[cat]["cost_imp"].append(0.0)
+                trial_data[cat]["sims"].append(0.0)
+
+    # ── Print table ───────────────────────────────────────────────────────
+    print(f"{chr(9552)*W}")
+    print(f"  Table 8.  T-ALNS-RRD real-time event response performance")
+    print(f"  ({n_trials} trials, travel-time perturbation sigma=0.08)")
+    print(f"{chr(9552)*W}")
+
+    hdr = (
+        f"  {'Event type':<22} {'Frequency':>14} {'Avg response (ms)':>20} "
+        f"{'Success rate (%)':>20} {'Cost impact red.':>20} {'Rollout sims':>16}"
+    )
+    print(hdr)
+    print(
+        f"  {chr(9472)*22} {chr(9472)*14} {chr(9472)*20} "
+        f"{chr(9472)*20} {chr(9472)*20} {chr(9472)*16}"
+    )
+
+    def _fmt(mean: float, std: float, decimals: int = 1, pct: bool = False) -> str:
+        """Format mean±std with optional % suffix."""
+        sfx = "%" if pct else ""
+        return f"{mean:.{decimals}f}{chr(177)}{std:.{decimals}f}{sfx}"
+
+    for cat in categories:
+        d  = trial_data[cat]
+        fm = _fmt(np.mean(d["freq"]),    np.std(d["freq"]))
+        rm = _fmt(np.mean(d["resp"]),    np.std(d["resp"]))
+        sm = _fmt(np.mean(d["success"]), np.std(d["success"]))
+        cm = _fmt(np.mean(d["cost_imp"]),np.std(d["cost_imp"]), pct=True)
+        nm = _fmt(np.mean(d["sims"]),    np.std(d["sims"]))
+
+        print(
+            f"  {cat:<22} {fm:>14} {rm:>20} "
+            f"{sm:>20} {cm:>20} {nm:>16}"
+        )
+
+    # ── Overall row (weighted across categories per trial) ────────────────
+    print(
+        f"  {chr(9472)*22} {chr(9472)*14} {chr(9472)*20} "
+        f"{chr(9472)*20} {chr(9472)*20} {chr(9472)*16}"
+    )
+
+    o_freq, o_resp, o_succ, o_cost, o_sims = [], [], [], [], []
+    for t in range(n_trials):
+        tf = sum(trial_data[cat]["freq"][t] for cat in categories)
+        o_freq.append(tf)
+        if tf > 0:
+            w_r = sum(trial_data[c]["freq"][t] * trial_data[c]["resp"][t]
+                      for c in categories)
+            w_s = sum(trial_data[c]["freq"][t] * trial_data[c]["success"][t]
+                      for c in categories)
+            w_c = sum(trial_data[c]["freq"][t] * trial_data[c]["cost_imp"][t]
+                      for c in categories)
+            w_n = sum(trial_data[c]["freq"][t] * trial_data[c]["sims"][t]
+                      for c in categories)
+            o_resp.append(w_r / tf)
+            o_succ.append(w_s / tf)
+            o_cost.append(w_c / tf)
+            o_sims.append(w_n / tf)
+        else:
+            o_resp.append(0); o_succ.append(100)
+            o_cost.append(0); o_sims.append(0)
+
+    fm = _fmt(np.mean(o_freq), np.std(o_freq))
+    rm = _fmt(np.mean(o_resp), np.std(o_resp))
+    sm = _fmt(np.mean(o_succ), np.std(o_succ))
+    cm = _fmt(np.mean(o_cost), np.std(o_cost), pct=True)
+    nm = _fmt(np.mean(o_sims), np.std(o_sims))
+
+    print(
+        f"  {'Overall':<22} {fm:>14} {rm:>20} "
+        f"{sm:>20} {cm:>20} {nm:>16}"
+    )
+    print(f"{chr(9552)*W}")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN  — Fleet sweep K = 3 → 13, max_iter = 100
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1279,6 +1738,23 @@ if __name__ == "__main__":
     print()
     np.random.seed(42)
     print_resilience_metrics(data, best_full_result)
+
+    # ── Table 8: Real-time event response performance ────────────────────
+    print()
+    print_realtime_event_performance(data, best_full_result, n_trials=10)
+
+    # ── In chi tiết tuyến đường từng xe (best K) ────────────────────────
+    print()
+    print_best_k_routes(data, best_full_result, best_K=best_r["K"])
+
+    # ── Phân tích nhạy cảm demand ±10% ──────────────────────────────────
+    print()
+    print_demand_sensitivity(
+        data,
+        best_K=best_r["K"],
+        alns_iterations=MAX_ITER,
+        reassign_iter=10,
+    )
 
     # ── Lưu toàn bộ output vào file log ─────────────────────────────────
     sys.stdout = _tee._orig          # khôi phục stdout gốc
