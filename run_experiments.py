@@ -10,7 +10,8 @@ Cases:
 
 Usage:
     venv/bin/python run_experiments.py --case 1
-    venv/bin/python run_experiments.py --case 0   # all cases
+    venv/bin/python run_experiments.py --case 0          # all cases
+    venv/bin/python run_experiments.py --case 1 --best-k 10
 """
 import sys
 import os
@@ -34,65 +35,41 @@ from src.vrp_alns_tabu_rrd import (
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
-ALNS_ITER     = 50      # ALNS iterations per solve
-REASSIGN_ITER = 10      # Phase 2a reassignment iterations
+ALNS_ITER     = 50
+REASSIGN_ITER = 10
 SEED          = 42
-W             = 110     # print width
+W             = 115
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _run_scenario(data, demands_list, K_range, label="", seed_offset=0):
+def _run_single(data, demands_list, K, seed_offset=0):
     """
-    Solve with given demands for each K in K_range, return best result by
-    composite score (same weighting as main solver).
+    Solve with given demands and a FIXED K. No fleet sweep.
+    Returns dict with cost, otdr, ces, n_active.
     """
     original_demands = list(data["demands"])
     data["demands"] = list(demands_list)
 
-    sweep = []
-    for K in K_range:
-        np.random.seed(SEED + seed_offset)
-        random.seed(SEED + seed_offset)
-        res = rrd_solve(
-            data,
-            num_vehicles=K,
-            alns_iterations=ALNS_ITER,
-            reassign_iter=REASSIGN_ITER,
-            verbose=False,
-        )
-        m = calc_metrics(res["rrd_routes"], data)
-        n_active = sum(1 for r in res["rrd_routes"] if len(r["nodes"]) > 2)
-        sweep.append({
-            "K": K, "cost": res["rrd_cost"], "otdr": m["otdr"],
-            "ces": m["ces"], "n_active": n_active, "result": res,
-        })
+    np.random.seed(SEED + seed_offset)
+    random.seed(SEED + seed_offset)
+    res = rrd_solve(
+        data,
+        num_vehicles=K,
+        alns_iterations=ALNS_ITER,
+        reassign_iter=REASSIGN_ITER,
+        verbose=False,
+    )
+    m = calc_metrics(res["rrd_routes"], data)
+    n_active = sum(1 for r in res["rrd_routes"] if len(r["nodes"]) > 2)
 
-    # Composite score (OTDR dominant)
-    costs = [s["cost"] for s in sweep]
-    otdrs = [s["otdr"] for s in sweep]
-    ces_v = [s["ces"]  for s in sweep]
-
-    def _norm(vals, invert=False):
-        lo, hi = min(vals), max(vals)
-        span = hi - lo if hi > lo else 1.0
-        if invert:
-            return [(hi - v) / span for v in vals]
-        return [(v - lo) / span for v in vals]
-
-    nc  = _norm(costs)
-    no  = _norm(otdrs, invert=True)
-    nce = _norm(ces_v)
-    for i, s in enumerate(sweep):
-        s["_score"] = 0.3 * nc[i] + 0.6 * no[i] + 0.1 * nce[i]
-
-    best = min(sweep, key=lambda x: x["_score"])
-
-    # Restore original demands
     data["demands"] = original_demands
-    return best
+    return {
+        "K": K, "cost": res["rrd_cost"], "otdr": m["otdr"],
+        "ces": m["ces"], "n_active": n_active, "result": res,
+    }
 
 
 def _select_random_stores(num_stores, count, seed):
@@ -103,10 +80,7 @@ def _select_random_stores(num_stores, count, seed):
 
 
 def _perturb_demands(baseline, store_indices, factor):
-    """
-    Return a copy of baseline demands with specified stores perturbed by factor.
-    factor can be: 1.10 (+10%), 0.90 (-10%), etc.
-    """
+    """Perturb demands of specified stores by a single factor."""
     perturbed = list(baseline)
     for sid in store_indices:
         perturbed[sid] = baseline[sid] * factor
@@ -114,11 +88,7 @@ def _perturb_demands(baseline, store_indices, factor):
 
 
 def _perturb_demands_mixed(baseline, store_indices, pct_abs, seed):
-    """
-    Return a copy of baseline demands with specified stores randomly
-    perturbed by ±pct_abs (e.g. 0.10 for ±10%).
-    Each store randomly gets + or -.
-    """
+    """Perturb demands of specified stores by ±pct_abs randomly."""
     rng = random.Random(seed)
     perturbed = list(baseline)
     for sid in store_indices:
@@ -127,12 +97,19 @@ def _perturb_demands_mixed(baseline, store_indices, pct_abs, seed):
     return perturbed
 
 
-def _print_scenario_table(title, description, data, baseline_demands, scenarios,
-                          K_range, num_stores):
+def _print_scenario_table(title, description, data, baseline_demands,
+                          scenarios, alloc_K, num_stores):
     """
-    Generic function to run and print a sensitivity table.
+    Run each scenario with a FIXED K (alloc_K), report Active vehicles
+    as the operationally needed fleet size.
 
-    scenarios: list of tuples (label, demands_list, seed_offset)
+    Giải thích cơ chế:
+    - alloc_K (Allocated K): số xe TỐI ĐA mà solver được phân bổ.
+    - Active: số xe THỰC SỰ được sử dụng (có chở hàng).
+    - Util%: Active / alloc_K — tỷ lệ sử dụng đội xe.
+    - Recommended K = Active + 1 (dự phòng 1 xe).
+
+    scenarios: list of (label, demands_list, seed_offset, n_changed_stores)
     """
     total_base = sum(baseline_demands[1:])
     capacity = data["vehicle_capacity"]
@@ -140,270 +117,225 @@ def _print_scenario_table(title, description, data, baseline_demands, scenarios,
     print(f"\n{'═'*W}")
     print(f"  {title}")
     print(f"  {description}")
-    print(f"  {num_stores} stores  |  Fleet sweep: K = {K_range[0]}→{K_range[-1]}")
-    print(f"  Total baseline demand = {total_base:,.1f} kg  |  Capacity = {capacity} kg")
+    print(f"  {num_stores} stores  |  Allocated K = {alloc_K}  |  Capacity = {capacity} kg")
+    print(f"  Total baseline demand = {total_base:,.1f} kg")
+    print(f"{'─'*W}")
+    print(f"  Cơ chế:")
+    print(f"    • Allocated K = {alloc_K}: số xe tối đa solver được dùng (từ fleet sweep baseline)")
+    print(f"    • Active: số xe THỰC SỰ dispatched (có ≥1 khách)")
+    print(f"    • Util%: Active / Allocated K — hiệu suất sử dụng đội xe")
+    print(f"    • Rec.K: Recommended fleet = Active + 1 (dự phòng)")
     print(f"{'═'*W}")
 
-    # Run baseline
+    # ── Baseline ──────────────────────────────────────────────────────────
     print(f"\n  ⏳  Running baseline ...", file=sys.stderr, flush=True)
-    base_best = _run_scenario(data, baseline_demands, K_range,
-                              label="Baseline", seed_offset=0)
-    base_cost   = base_best["cost"]
-    base_otdr   = base_best["otdr"]
-    base_K      = base_best["K"]
-    base_active = base_best["n_active"]
+    base = _run_single(data, baseline_demands, alloc_K, seed_offset=0)
+    base_util = base["n_active"] / alloc_K * 100
 
     print(f"\n  Baseline (0%)")
     print(f"    Total demand : {total_base:>12,.1f} kg")
-    print(f"    Best K       : {base_K:>12}")
-    print(f"    Active veh.  : {base_active:>12}")
-    print(f"    Cost         : {base_cost:>12,.0f} VND")
-    print(f"    OTDR         : {base_otdr:>11.2f}%")
+    print(f"    Allocated K  : {alloc_K:>12}")
+    print(f"    Active veh.  : {base['n_active']:>12}")
+    print(f"    Utilization  : {base_util:>11.1f}%")
+    print(f"    Cost         : {base['cost']:>12,.0f} VND")
+    print(f"    OTDR         : {base['otdr']:>11.2f}%")
 
-    # Header
-    print(f"\n  {'─'*100}")
+    # ── Table header ──────────────────────────────────────────────────────
+    print(f"\n  {'─'*107}")
     print(
-        f"  {'Scenario':<16} {'Tot.Demand':<13} {'Best K':<8} {'Active':<8} "
-        f"{'Cost (VND)':<18} {'Δ Cost':<16} {'Δ%':<10} {'OTDR':<9} {'ΔOTDR':<9}"
+        f"  {'Scenario':<18} {'Demand':<12} {'#CH':<6} "
+        f"{'Active':<8} {'Util%':<7} {'Rec.K':<7} "
+        f"{'Cost (VND)':<16} {'Δ Cost':<14} {'Δ%':<9} "
+        f"{'OTDR':<8} {'ΔOTDR':<7}"
     )
     print(
-        f"  {'─'*16} {'─'*13} {'─'*8} {'─'*8} "
-        f"{'─'*18} {'─'*16} {'─'*10} {'─'*9} {'─'*9}"
+        f"  {'─'*18} {'─'*12} {'─'*6} "
+        f"{'─'*8} {'─'*7} {'─'*7} "
+        f"{'─'*16} {'─'*14} {'─'*9} "
+        f"{'─'*8} {'─'*7}"
     )
 
     results = []
-    for idx, (label, demands_list, seed_offset) in enumerate(scenarios):
+    for label, demands_list, seed_offset, n_changed in scenarios:
         print(f"  ⏳  Running {label} ...", file=sys.stderr, flush=True)
-        best_s = _run_scenario(data, demands_list, K_range,
-                               label=label, seed_offset=seed_offset)
+        s = _run_single(data, demands_list, alloc_K, seed_offset=seed_offset)
 
-        p_cost   = best_s["cost"]
-        p_otdr   = best_s["otdr"]
-        p_K      = best_s["K"]
-        p_active = best_s["n_active"]
-        tot_d    = sum(demands_list[1:])
+        tot_d      = sum(demands_list[1:])
+        delta      = s["cost"] - base["cost"]
+        delta_pct  = delta / base["cost"] * 100 if base["cost"] > 0 else 0
+        delta_otdr = s["otdr"] - base["otdr"]
+        util_pct   = s["n_active"] / alloc_K * 100
+        rec_k      = min(s["n_active"] + 1, alloc_K)
 
-        delta      = p_cost - base_cost
-        delta_pct  = delta / base_cost * 100 if base_cost > 0 else 0
-        delta_otdr = p_otdr - base_otdr
-        cost_sign  = "+" if delta >= 0 else ""
-        otdr_sign  = "+" if delta_otdr >= 0 else ""
-        k_note     = f" (was {base_K})" if p_K != base_K else ""
-
-        # Count perturbed stores
-        n_changed = sum(1 for i in range(1, len(demands_list))
-                        if abs(demands_list[i] - baseline_demands[i]) > 0.01)
+        cs = "+" if delta >= 0 else ""
+        os_ = "+" if delta_otdr >= 0 else ""
 
         print(
-            f"  {label:<16} {tot_d:<13,.1f} {p_K:<8}{k_note:>0} "
-            f"{p_active:<8} {p_cost:<18,.0f} "
-            f"{cost_sign}{delta:<15,.0f} {cost_sign}{delta_pct:<9.2f}% "
-            f"{p_otdr:<9.2f}%{otdr_sign}{delta_otdr:<8.2f}%"
+            f"  {label:<18} {tot_d:<12,.1f} {n_changed:<6} "
+            f"{s['n_active']:<8} {util_pct:<6.0f}% {rec_k:<7} "
+            f"{s['cost']:<16,.0f} {cs}{delta:<13,.0f} {cs}{delta_pct:<8.2f}% "
+            f"{s['otdr']:<7.2f}% {os_}{delta_otdr:<6.2f}%"
         )
 
         results.append({
-            "label": label, "tot_demand": tot_d, "best_K": p_K,
-            "n_active": p_active, "cost": p_cost, "delta": delta,
-            "delta_pct": delta_pct, "otdr": p_otdr, "delta_otdr": delta_otdr,
-            "n_changed": n_changed,
+            "label": label, "tot_demand": tot_d, "n_changed": n_changed,
+            "n_active": s["n_active"], "util_pct": util_pct, "rec_k": rec_k,
+            "cost": s["cost"], "delta": delta, "delta_pct": delta_pct,
+            "otdr": s["otdr"], "delta_otdr": delta_otdr,
         })
 
-    # Summary
-    _print_summary(results, base_K, base_cost, base_otdr)
-    return results
-
-
-def _print_summary(results, base_K, base_cost, base_otdr):
-    """Print sensitivity summary from results list."""
-    if not results:
-        return
+    # ── Summary ───────────────────────────────────────────────────────────
+    print(f"\n  {'─'*107}")
+    print(f"  SENSITIVITY SUMMARY")
+    print(f"  {'─'*107}")
 
     inc = [r for r in results if r["delta_pct"] > 0.01]
     dec = [r for r in results if r["delta_pct"] < -0.01]
 
-    avg_inc_cost = sum(r["delta_pct"] for r in inc) / len(inc) if inc else 0
-    avg_dec_cost = sum(r["delta_pct"] for r in dec) / len(dec) if dec else 0
-    avg_inc_otdr = sum(r["delta_otdr"] for r in inc) / len(inc) if inc else 0
-    avg_dec_otdr = sum(r["delta_otdr"] for r in dec) / len(dec) if dec else 0
-
-    k_changes = [r for r in results if r["best_K"] != base_K]
-    max_impact = max(results, key=lambda r: abs(r["delta_pct"]))
-
-    print(f"\n  {'─'*100}")
-    print(f"  SENSITIVITY SUMMARY")
-    print(f"  {'─'*100}")
     if inc:
-        print(f"  Avg cost change  (cost increase scenarios): +{avg_inc_cost:.2f}%")
+        avg = sum(r["delta_pct"] for r in inc) / len(inc)
+        print(f"  Avg cost Δ (demand increase): +{avg:.2f}%")
     if dec:
-        print(f"  Avg cost change  (cost decrease scenarios): {avg_dec_cost:.2f}%")
+        avg = sum(r["delta_pct"] for r in dec) / len(dec)
+        print(f"  Avg cost Δ (demand decrease): {avg:.2f}%")
+
+    max_imp = max(results, key=lambda r: abs(r["delta_pct"]))
     print(
-        f"  Most impactful scenario : {max_impact['label']}  →  "
-        f"Δcost = {'+' if max_impact['delta_pct']>=0 else ''}{max_impact['delta_pct']:.2f}%"
-        f"  |  OTDR = {max_impact['otdr']:.2f}%"
+        f"  Most impactful : {max_imp['label']}  →  "
+        f"Δcost={'+' if max_imp['delta_pct']>=0 else ''}{max_imp['delta_pct']:.2f}%"
+        f"  |  OTDR={max_imp['otdr']:.2f}%"
     )
-    if k_changes:
-        for kc in k_changes:
+
+    # Fleet utilization insights
+    min_active = min(r["n_active"] for r in results)
+    max_active = max(r["n_active"] for r in results)
+    print(f"\n  Fleet insights (Allocated K = {alloc_K}):")
+    print(f"    Active vehicles range : {min_active} – {max_active}")
+    if min_active < alloc_K:
+        print(
+            f"    → Khi demand giảm, chỉ cần {min_active} xe "
+            f"(tiết kiệm {alloc_K - min_active} xe so với allocation)"
+        )
+    if max_active >= alloc_K:
+        print(
+            f"    → Khi demand tăng, cần tất cả {alloc_K} xe. "
+            f"Có thể cần thêm xe nếu demand tăng hơn nữa."
+        )
+
+    otdr_drops = [r for r in results if r["delta_otdr"] < -0.01]
+    if otdr_drops:
+        for r in otdr_drops:
             print(
-                f"  ⚠ Optimal K changed at {kc['label']}: "
-                f"K = {base_K} → {kc['best_K']}  "
-                f"(active vehicles: {kc['n_active']})"
+                f"    ⚠ {r['label']}: OTDR giảm {r['delta_otdr']:.2f}% "
+                f"→ cần thêm xe hoặc tối ưu lộ trình"
             )
     else:
-        print(f"  ✓ Optimal K = {base_K} remains stable across all scenarios")
+        print(f"    ✓ OTDR ổn định ở tất cả scenarios")
+
     print(f"{'═'*W}")
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  CASE 1: Global demand ±10%, ±20%  (tất cả stores)
+#  CASE 1–4
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def run_case1(data, best_K):
     """Case 1: ±10%, ±20% demand cho TOÀN BỘ stores."""
-    baseline = list(data["demands"])
-    num_stores = len(baseline) - 1
-    K_lo = max(1, best_K - 2)
-    K_hi = best_K + 2
-    K_range = range(K_lo, K_hi + 1)
-
+    bl = list(data["demands"])
+    ns = len(bl) - 1
     scenarios = []
-    for idx, (label, factor) in enumerate([
-        ("-20%", 0.80), ("-10%", 0.90),
-        ("+10%", 1.10), ("+20%", 1.20),
+    for idx, (lbl, f) in enumerate([
+        ("-20%", 0.80), ("-10%", 0.90), ("+10%", 1.10), ("+20%", 1.20),
     ]):
-        perturbed = list(baseline)
-        for sid in range(1, num_stores + 1):
-            perturbed[sid] = baseline[sid] * factor
-        scenarios.append((f"Global {label}", perturbed, idx + 1))
+        p = list(bl)
+        for sid in range(1, ns + 1):
+            p[sid] = bl[sid] * f
+        scenarios.append((f"Global {lbl}", p, idx + 1, ns))
 
     return _print_scenario_table(
-        title="CASE 1: GLOBAL DEMAND SENSITIVITY",
-        description="Perturb ALL stores' demand simultaneously by ±10%, ±20%",
-        data=data,
-        baseline_demands=baseline,
-        scenarios=scenarios,
-        K_range=K_range,
-        num_stores=num_stores,
+        "CASE 1: GLOBAL DEMAND SENSITIVITY",
+        "Perturb ALL stores' demand simultaneously by ±10%, ±20%",
+        data, bl, scenarios, best_K, ns,
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CASE 2: +10%, +20% random demand một số stores (< 1/2 tổng CH)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_case2(data, best_K):
-    """Case 2: +10%, +20% demand cho RANDOM subset stores (< 1/2 of 139)."""
-    baseline = list(data["demands"])
-    num_stores = len(baseline) - 1
-    half = num_stores // 2   # 69 stores (< 1/2 of 139)
-    K_lo = max(1, best_K - 2)
-    K_hi = best_K + 2
-    K_range = range(K_lo, K_hi + 1)
-
-    # Select random stores for each sub-scenario (different seeds)
-    stores_10 = _select_random_stores(num_stores, half, seed=100)
-    stores_20 = _select_random_stores(num_stores, half, seed=200)
-
+    """Case 2: +10%, +20% demand cho RANDOM subset stores (< 1/2)."""
+    bl = list(data["demands"])
+    ns = len(bl) - 1
+    half = ns // 2
+    s10 = _select_random_stores(ns, half, seed=100)
+    s20 = _select_random_stores(ns, half, seed=200)
     scenarios = [
-        (f"+10% ({len(stores_10)} CH)",
-         _perturb_demands(baseline, stores_10, 1.10), 10),
-        (f"+20% ({len(stores_20)} CH)",
-         _perturb_demands(baseline, stores_20, 1.20), 20),
+        (f"+10% rnd ({len(s10)}CH)", _perturb_demands(bl, s10, 1.10), 10, len(s10)),
+        (f"+20% rnd ({len(s20)}CH)", _perturb_demands(bl, s20, 1.20), 20, len(s20)),
     ]
-
     return _print_scenario_table(
-        title="CASE 2: POSITIVE RANDOM DEMAND SENSITIVITY",
-        description=f"Increase demand of RANDOM subset (< 1/2 = {half} stores) by +10%, +20%",
-        data=data,
-        baseline_demands=baseline,
-        scenarios=scenarios,
-        K_range=K_range,
-        num_stores=num_stores,
+        "CASE 2: POSITIVE RANDOM DEMAND SENSITIVITY",
+        f"Increase demand of RANDOM subset (< 1/2 = {half} stores) by +10%, +20%",
+        data, bl, scenarios, best_K, ns,
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CASE 3: -10%, -20% random demand một số stores (< 1/2 tổng CH)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_case3(data, best_K):
-    """Case 3: -10%, -20% demand cho RANDOM subset stores (< 1/2 of 139)."""
-    baseline = list(data["demands"])
-    num_stores = len(baseline) - 1
-    half = num_stores // 2   # 69 stores
-    K_lo = max(1, best_K - 2)
-    K_hi = best_K + 2
-    K_range = range(K_lo, K_hi + 1)
-
-    stores_10 = _select_random_stores(num_stores, half, seed=300)
-    stores_20 = _select_random_stores(num_stores, half, seed=400)
-
+    """Case 3: -10%, -20% demand cho RANDOM subset stores (< 1/2)."""
+    bl = list(data["demands"])
+    ns = len(bl) - 1
+    half = ns // 2
+    s10 = _select_random_stores(ns, half, seed=300)
+    s20 = _select_random_stores(ns, half, seed=400)
     scenarios = [
-        (f"-10% ({len(stores_10)} CH)",
-         _perturb_demands(baseline, stores_10, 0.90), 30),
-        (f"-20% ({len(stores_20)} CH)",
-         _perturb_demands(baseline, stores_20, 0.80), 40),
+        (f"-10% rnd ({len(s10)}CH)", _perturb_demands(bl, s10, 0.90), 30, len(s10)),
+        (f"-20% rnd ({len(s20)}CH)", _perturb_demands(bl, s20, 0.80), 40, len(s20)),
     ]
-
     return _print_scenario_table(
-        title="CASE 3: NEGATIVE RANDOM DEMAND SENSITIVITY",
-        description=f"Decrease demand of RANDOM subset (< 1/2 = {half} stores) by -10%, -20%",
-        data=data,
-        baseline_demands=baseline,
-        scenarios=scenarios,
-        K_range=K_range,
-        num_stores=num_stores,
+        "CASE 3: NEGATIVE RANDOM DEMAND SENSITIVITY",
+        f"Decrease demand of RANDOM subset (< 1/2 = {half} stores) by -10%, -20%",
+        data, bl, scenarios, best_K, ns,
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CASE 4: ±10%, ±20% random demand một số stores (> 1/2 tổng CH)
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_case4(data, best_K):
-    """
-    Case 4: ±10%, ±20% demand cho RANDOM subset stores (> 1/2 of 139).
-    Mỗi store trong subset được gán ngẫu nhiên + hoặc -.
-    """
-    baseline = list(data["demands"])
-    num_stores = len(baseline) - 1
-    # Slightly more than half: ~75-80 stores (>= 70 + a bit)
-    count = int(num_stores * 0.55)  # ~76 stores — slightly > half
-    K_lo = max(1, best_K - 2)
-    K_hi = best_K + 2
-    K_range = range(K_lo, K_hi + 1)
-
-    stores_10 = _select_random_stores(num_stores, count, seed=500)
-    stores_20 = _select_random_stores(num_stores, count, seed=600)
-
+    """Case 4: ±10%, ±20% demand cho RANDOM subset stores (> 1/2)."""
+    bl = list(data["demands"])
+    ns = len(bl) - 1
+    count = int(ns * 0.55)  # ~76 stores — slightly > half
+    s10 = _select_random_stores(ns, count, seed=500)
+    s20 = _select_random_stores(ns, count, seed=600)
     scenarios = [
-        (f"±10% ({len(stores_10)} CH)",
-         _perturb_demands_mixed(baseline, stores_10, 0.10, seed=510), 50),
-        (f"±20% ({len(stores_20)} CH)",
-         _perturb_demands_mixed(baseline, stores_20, 0.20, seed=610), 60),
+        (f"±10% rnd ({len(s10)}CH)", _perturb_demands_mixed(bl, s10, 0.10, seed=510), 50, len(s10)),
+        (f"±20% rnd ({len(s20)}CH)", _perturb_demands_mixed(bl, s20, 0.20, seed=610), 60, len(s20)),
     ]
-
     return _print_scenario_table(
-        title="CASE 4: MIXED RANDOM DEMAND SENSITIVITY",
-        description=f"Randomly ±perturb demand of RANDOM subset (> 1/2 ≈ {count} stores) by ±10%, ±20%",
-        data=data,
-        baseline_demands=baseline,
-        scenarios=scenarios,
-        K_range=K_range,
-        num_stores=num_stores,
+        "CASE 4: MIXED RANDOM DEMAND SENSITIVITY",
+        f"Randomly ±perturb demand of RANDOM subset (> 1/2 ≈ {count} stores) by ±10%, ±20%",
+        data, bl, scenarios, best_K, ns,
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FLEET SWEEP – find best K (reused from vrp_alns_tabu_rrd.py logic)
+#  FLEET SWEEP – find best K
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def find_best_K(data, K_min=3, K_max=13):
-    """Run fleet sweep to find best K by composite score."""
+    """
+    Fleet sweep K_min→K_max.
+
+    Chiến lược chọn Best K:
+      1. Tìm max OTDR trong tất cả K
+      2. Lọc các K có OTDR >= max_OTDR - 0.5%  (gần tối ưu)
+      3. Trong nhóm đó, chọn K có cost THẤP NHẤT
+      4. Tie-break: K nhỏ hơn (ít xe hơn = tiết kiệm hơn)
+
+    Cách này đảm bảo Best K là SỐ XE NHỎ NHẤT mà vẫn giữ OTDR gần tối ưu,
+    thay vì luôn chọn K cao nhất chỉ vì OTDR tốt hơn 0.01%.
+    """
     import time as time_mod
 
-    num_customers = len(data["distance_matrix"]) - 1
     print(f"\n{'═'*W}")
     print(f"  FLEET SWEEP — Finding optimal K  (K = {K_min}→{K_max})")
+    print(f"  Strategy: Smallest K with near-optimal OTDR (within 0.5%)")
     print(f"{'═'*W}")
 
     summary = []
@@ -412,47 +344,45 @@ def find_best_K(data, K_min=3, K_max=13):
         np.random.seed(SEED)
         random.seed(SEED)
         result = rrd_solve(
-            data,
-            num_vehicles=K,
-            alns_iterations=ALNS_ITER,
-            reassign_iter=REASSIGN_ITER,
+            data, num_vehicles=K,
+            alns_iterations=ALNS_ITER, reassign_iter=REASSIGN_ITER,
             verbose=False,
         )
-        comp_time = time_mod.time() - t0
+        ct = time_mod.time() - t0
         m = calc_metrics(result["rrd_routes"], data)
+        n_active = sum(1 for r in result["rrd_routes"] if len(r["nodes"]) > 2)
         summary.append({
             "K": K, "total_cost": result["rrd_cost"],
             "otdr": m["otdr"], "ces": m["ces"],
-            "on_time": m["on_time"], "time": comp_time,
+            "n_active": n_active, "time": ct,
         })
+        util = n_active / K * 100
         print(
-            f"  K={K:>2}  cost={result['rrd_cost']:>15,.0f} VND  "
+            f"  K={K:>2}  Active={n_active:>2}  Util={util:>5.0f}%  "
+            f"cost={result['rrd_cost']:>15,.0f} VND  "
             f"OTDR={m['otdr']:>6.2f}%  CES={m['ces']:>6.2f}  "
-            f"time={comp_time:>7.1f}s"
+            f"time={ct:>7.1f}s"
         )
 
-    # Composite score
-    costs = [r["total_cost"] for r in summary]
-    otdrs = [r["otdr"]       for r in summary]
-    ces_v = [r["ces"]        for r in summary]
+    # Strategy: smallest K with near-optimal OTDR, then lowest cost
+    max_otdr = max(s["otdr"] for s in summary)
+    threshold = max_otdr - 0.5  # within 0.5% of best
 
-    def _norm(vals, invert=False):
-        lo, hi = min(vals), max(vals)
-        span = hi - lo if hi > lo else 1.0
-        if invert:
-            return [(hi - v) / span for v in vals]
-        return [(v - lo) / span for v in vals]
+    candidates = [s for s in summary if s["otdr"] >= threshold]
+    if not candidates:
+        candidates = summary
 
-    nc  = _norm(costs)
-    no  = _norm(otdrs, invert=True)
-    nce = _norm(ces_v)
-    for i, r in enumerate(summary):
-        r["_score"] = 0.3 * nc[i] + 0.6 * no[i] + 0.1 * nce[i]
+    # Among candidates, pick lowest cost; tie-break: lower K
+    best = min(candidates, key=lambda x: (x["total_cost"], x["K"]))
 
-    best = min(summary, key=lambda x: x["_score"])
+    print(f"\n  Max OTDR across sweep = {max_otdr:.2f}%")
+    print(f"  Threshold = {threshold:.2f}% (max - 0.5%)")
+    print(f"  Candidates (OTDR >= {threshold:.2f}%): "
+          f"K = {[s['K'] for s in candidates]}")
     print(
-        f"\n  ★  Best K = {best['K']}  →  {best['total_cost']:,.0f} VND  |  "
-        f"OTDR = {best['otdr']:.2f}%  |  Score = {best['_score']:.4f}"
+        f"\n  ★  Best K = {best['K']}  (Active={best['n_active']})  →  "
+        f"{best['total_cost']:,.0f} VND  |  "
+        f"OTDR = {best['otdr']:.2f}%"
     )
     print(f"{'═'*W}\n")
     return best["K"]
@@ -468,13 +398,11 @@ def main():
     )
     parser.add_argument(
         "--case", type=int, choices=[0, 1, 2, 3, 4], required=True,
-        help="Which case to run: 0=All, 1=Global±, 2=+Random<half, "
-             "3=-Random<half, 4=±Random>half",
+        help="0=All, 1=Global±, 2=+Random<half, 3=-Random<half, 4=±Random>half",
     )
     parser.add_argument(
         "--best-k", type=int, default=0,
-        help="Skip fleet sweep and use this K as baseline "
-             "(0 = run fleet sweep to find best K)",
+        help="Skip fleet sweep and use this K (0 = auto fleet sweep)",
     )
     args = parser.parse_args()
 
@@ -484,34 +412,22 @@ def main():
 
     print(f"\n  Loading data ...", file=sys.stderr, flush=True)
     data = load_data()
-    num_stores = len(data["distance_matrix"]) - 1
-    print(f"  Loaded {num_stores} stores + depot")
-    print(f"  Capacity = {data['vehicle_capacity']} kg")
-    print(f"  Total baseline demand = {sum(data['demands'][1:]):,.1f} kg")
+    ns = len(data["distance_matrix"]) - 1
+    print(f"  {ns} stores + depot  |  Cap = {data['vehicle_capacity']} kg"
+          f"  |  Baseline demand = {sum(data['demands'][1:]):,.1f} kg")
 
-    # Determine best K
     if args.best_k > 0:
         best_K = args.best_k
         print(f"\n  Using provided best K = {best_K}")
     else:
         best_K = find_best_K(data)
 
-    # Run requested case(s)
-    cases_to_run = [args.case] if args.case != 0 else [1, 2, 3, 4]
-
-    for case_num in cases_to_run:
+    cases = [args.case] if args.case != 0 else [1, 2, 3, 4]
+    for c in cases:
         print(f"\n{'▓'*W}")
-        print(f"  RUNNING CASE {case_num}")
+        print(f"  RUNNING CASE {c}")
         print(f"{'▓'*W}")
-
-        if case_num == 1:
-            run_case1(data, best_K)
-        elif case_num == 2:
-            run_case2(data, best_K)
-        elif case_num == 3:
-            run_case3(data, best_K)
-        elif case_num == 4:
-            run_case4(data, best_K)
+        [None, run_case1, run_case2, run_case3, run_case4][c](data, best_K)
 
     print(f"\n  ✅  All requested cases complete.\n")
 
