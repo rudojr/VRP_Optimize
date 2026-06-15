@@ -8,10 +8,6 @@ import time as time_mod
 
 
 def generate_congestion_matrix(num_nodes, seed=42):
-    #random dữ liệu kẹt xe
-    #60% là đường bình thường
-    #30% là đường hơi tắc
-    #10% là đường đặc biệt tắc
     rng = np.random.default_rng(seed)
     congestion = rng.choice([1, 2, 3], size=(num_nodes, num_nodes), p=[0.6, 0.3, 0.1])
     np.fill_diagonal(congestion, 0)
@@ -20,7 +16,6 @@ def generate_congestion_matrix(num_nodes, seed=42):
 
 
 def load_data():
-    #đọc data từ file csv
     df_store = pd.read_csv("data/store.csv")
     df_store["Demand_kg"] = (
         df_store["Demand"]
