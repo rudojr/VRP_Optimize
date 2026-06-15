@@ -85,28 +85,25 @@ def build_and_solve_milp(data, num_vehicles, time_limit_sec=120, verbose=False):
     s_time = data["service_time_min"]
     v_avg  = data["avg_speed_kmh"]
 
-    # tính thời gian di chuyển
-    travel_time = np.zeros((n, n))
-    for i in range(n):
-        for j in range(n):
-            if i != j:
-                travel_time[i][j] = (dist[i][j] / v_avg) * cong[i][j] * 60
+    # tính thời gian di chuyển (vectorized)
+    travel_time = (dist / v_avg) * cong * 60
+    np.fill_diagonal(travel_time, 0)
 
-    M = 24 * 60  # 1440 phút = 24 giờ
+    # pre-compute arc sets once to avoid repeated i != j checks
+    arcs_NN = [(i, j) for i in N for j in N if i != j]
+    arcs_NC = [(i, j) for i in N for j in C if i != j]
+    arcs_CC = [(i, j) for i in C for j in C if i != j]
 
     #build model MILP
     #K là số xe
     prob = LpProblem(f"CVRPTW_MILP_K{num_vehicles}", LpMinimize)
-    x = {}
-    for i in N:
-        for j in N:
-            if i != j:
-                for k in K:
-                    x[i, j, k] = LpVariable(f"x_{i}_{j}_{k}", cat=LpBinary)
+    x = {
+        (i, j, k): LpVariable(f"x_{i}_{j}_{k}", cat=LpBinary)
+        for (i, j) in arcs_NN for k in K
+    }
 
-    S = {}
-    for j in N:
-        S[j] = LpVariable(f"S_{j}", lowBound=0, upBound=M, cat=LpContinuous)
+    S_ub = tw[depot][1]
+    S = {j: LpVariable(f"S_{j}", lowBound=0, upBound=S_ub, cat=LpContinuous) for j in N}
 
     delta = {}
     for j in C:
@@ -184,15 +181,15 @@ def build_and_solve_milp(data, num_vehicles, time_limit_sec=120, verbose=False):
         )
 
    
+    # tighten big-M per arc: M_ij = max(0, tw[i][1] + service + t[i][j] - tw[j][0])
     for k in K:
-        for i in N:
-            for j in C:
-                if i != j:
-                    service = s_time if i != depot else 0
-                    prob += (
-                        S[j] >= S[i] + service + travel_time[i][j] - M * (1 - x[i, j, k]),
-                        f"time_prop_{i}_{j}_{k}",
-                    )
+        for i, j in arcs_NC:
+            service = s_time if i != depot else 0
+            M_ij = max(0.0, tw[i][1] + service + travel_time[i][j] - tw[j][0])
+            prob += (
+                S[j] >= S[i] + service + travel_time[i][j] - M_ij * (1 - x[i, j, k]),
+                f"time_prop_{i}_{j}_{k}",
+            )
 
     # thời gian bắt đầu không sớm hơn thời gian bắt đầu của cửa hàng
     for j in C:
@@ -213,13 +210,11 @@ def build_and_solve_milp(data, num_vehicles, time_limit_sec=120, verbose=False):
     prob += S[depot] <= tw[depot][1], "depot_tw_upper"
 
     for k in K:
-        for i in C:
-            for j in C:
-                if i != j:
-                    prob += (
-                        u[i] - u[j] + n * x[i, j, k] <= n - 1,
-                        f"mtz_{i}_{j}_{k}",
-                    )
+        for i, j in arcs_CC:
+            prob += (
+                u[i] - u[j] + n * x[i, j, k] <= n - 1,
+                f"mtz_{i}_{j}_{k}",
+            )
 
     #tìm lời giải
     solver = PULP_CBC_CMD(
@@ -248,12 +243,10 @@ def build_and_solve_milp(data, num_vehicles, time_limit_sec=120, verbose=False):
     routes_info = []
     for k in K:
         route_arcs = []
-        for i in N:
-            for j in N:
-                if i != j and (i, j, k) in x:
-                    val = value(x[i, j, k])
-                    if val is not None and val > 0.5:
-                        route_arcs.append((i, j))
+        for i, j in arcs_NN:
+            val = value(x[i, j, k])
+            if val is not None and val > 0.5:
+                route_arcs.append((i, j))
 
         if not route_arcs:
             continue
@@ -397,7 +390,7 @@ def print_solution(data, num_vehicles, status, total_cost, routes_info, solve_ti
     print(f"{'═' * 90}")
 
 
-def vehicle_sweep(data, k_min=3, k_max=7, time_limit=120):
+def vehicle_sweep(data, k_min, k_max, time_limit=120):
     print("=="*80)
     print("SOLVE MILP ALGORITHM")
     print("=="*80)
@@ -508,4 +501,4 @@ if __name__ == "__main__":
     print(f"Avg speed    : {data['avg_speed_kmh']} km/h")
     print()
 
-    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit=120)
+    results, best_k = vehicle_sweep(data, k_min=3, k_max=6, time_limit=120)

@@ -19,7 +19,7 @@ def generate_congestion_matrix(num_nodes, seed=42):
 
 
 def load_data():
-    df_store = pd.read_csv("data/140_stores.csv")
+    df_store = pd.read_csv("data/store.csv")
     df_store["Demand_kg"] = (
         df_store["Demand"]
         .astype(str)
@@ -34,9 +34,9 @@ def load_data():
     df_store["tw_start"] = df_store["Time start"].apply(time_to_minutes)
     df_store["tw_end"]   = df_store["Time end"].apply(time_to_minutes)
 
-    df_matrix = pd.read_csv("data/140_distant_matrix.csv")
+    df_matrix = pd.read_csv("data/distant_matrix.csv")
     df_matrix = df_matrix.drop(columns=["From/to"])
-    distance_matrix = df_matrix.values / 1000.0
+    distance_matrix = df_matrix.values
 
 
     num_nodes = distance_matrix.shape[0]
@@ -1034,4 +1034,4 @@ if __name__ == "__main__":
     print(f"Avg speed    : {data['avg_speed_kmh']} km/h")
     print()
 
-    results, best_k = vehicle_sweep(data, k_min=3, k_max=13, time_limit_iter=500)
+    results, best_k = vehicle_sweep(data, k_min=3, k_max=6, time_limit_iter=500)
